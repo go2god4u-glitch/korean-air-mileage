@@ -227,26 +227,33 @@
       results.append(empty);
       return;
     }
+    // First class is grouped on its own: Korean Air prints one combined
+    // "보너스/좌석승급" marker, so it is a different kind of find from business.
     const byRoute = new Map();
     for (const hit of hits) {
-      const key = `${hit.program}|${hit.origin}|${hit.destination}`;
-      if (!byRoute.has(key)) byRoute.set(key, []);
-      byRoute.get(key).push(hit);
+      for (const cabin of hit.cabins ?? ['prestige']) {
+        const key = `${hit.program}|${hit.origin}|${hit.destination}|${cabin}`;
+        if (!byRoute.has(key)) byRoute.set(key, []);
+        byRoute.get(key).push(hit);
+      }
     }
     // Newest finding first while a scan is live, so results read as they arrive.
     const ordered = [...byRoute.entries()].sort((a, b) => running
       ? String(b[1][0]?.foundAt || '').localeCompare(String(a[1][0]?.foundAt || ''))
       : b[1].length - a[1].length);
     for (const [key, routeHits] of ordered) {
-      const [program, origin, destination] = key.split('|');
-      const panel = node('section', 'panel leg-panel');
+      const [program, origin, destination, cabin = 'prestige'] = key.split('|');
+      const first = cabin === 'first';
+      const panel = node('section', 'panel leg-panel' + (first ? ' first-class' : ''));
       const top = node('div', 'leg-top'), detail = node('div');
-      detail.append(node('span', 'direction', programNames[program] || program));
+      detail.append(node('span', 'direction' + (first ? ' first-tag' : ''),
+        `${programNames[program] || program} · ${first ? '일등석' : '비즈니스'}`));
       const route = node('div', 'route-line');
       route.append(node('h3', null, origin), node('span', 'arrow', '→'), node('h3', null, destination));
-      const hours = hoursFor(destination);
+      const overseas = origin === 'ICN' ? destination : origin;
+      const hours = hoursFor(overseas);
       detail.append(route, node('div', 'route-details',
-        `${airportName(destination)} · 비즈니스 보너스 좌석${hours ? ` · 약 ${hours}시간` : ''}`));
+        `${airportName(overseas)} · ${first ? '일등석 보너스 또는 좌석승급' : '비즈니스 보너스 좌석'}${hours ? ` · 약 ${hours}시간` : ''}`));
       const count = node('div', 'result-count');
       count.append(node('strong', null, String(routeHits.length)), node('span', null, '일'),
         node('div', 'count-label', '좌석 표시가 있는 날짜'));
@@ -254,12 +261,16 @@
       panel.append(top);
       const foundAt = routeHits[0]?.foundAt;
       if (foundAt) panel.append(node('p', 'coverage-note', `${clockTime(foundAt)}에 확인했어요`));
+      if (first) {
+        panel.append(node('p', 'coverage-note result-warning',
+          '대한항공은 일등석 보너스와 좌석승급을 한 표시로 묶어서 공개해요. 둘 중 어느 쪽인지는 대한항공 화면에서 확인해 주세요.'));
+      }
       const grid = node('div', 'date-grid');
       for (const hit of routeHits.sort((a, b) => a.date.localeCompare(b.date))) {
         const card = node('div', 'date-card');
         card.append(node('span', 'date-top', prettyDate(hit.date).replace(/\s\(.*\)$/, '')),
           node('span', 'date-number', String(Number(hit.date.slice(8, 10)))),
-          node('span', 'date-badge', '비즈니스'));
+          node('span', 'date-badge' + (first ? ' first-badge' : ''), first ? '일등석' : '비즈니스'));
         grid.append(card);
       }
       panel.append(grid);

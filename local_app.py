@@ -984,7 +984,16 @@ class BusinessScanService:
         if value is None or self.search.store.stale(value):
             value = collect_leg(leg, self.root)
             self.search.store.save(value, leg)
-        return [row["date"] for row in value["dates"] if row.get("prestigeAward")]
+        found = []
+        for row in value["dates"]:
+            cabins = ["prestige"] if row.get("prestigeAward") else []
+            # The public calendar prints one combined 일등석 보너스/좌석승급 marker,
+            # so a first-class day is reported as such without claiming it is an award.
+            if row.get("firstAwardOrUpgrade"):
+                cabins.append("first")
+            if cabins:
+                found.append({"date": row["date"], "cabins": cabins})
+        return found
 
     def _collect_asiana(self, leg):
         # Asiana refuses back-to-back lookups, so each one waits its turn. A slow
@@ -1007,7 +1016,9 @@ class BusinessScanService:
                     raise AppError(code, "아시아나 조회를 완료하지 못했어요." if code not in RESTRICTIONS
                                     else "아시아나에서 접속을 제한했어요.")
                 days = job.get("legs", [{}])[0].get("days", [])
-                return [day["date"] for day in days if "business" in (day.get("cabins") or [])]
+                # Asiana's public calendar publishes economy and business only.
+                return [{"date": day["date"], "cabins": ["prestige"]}
+                        for day in days if "business" in (day.get("cabins") or [])]
         raise AppError("COLLECTION_TIMEOUT", "아시아나 조회가 오래 걸려 중단했어요.")
 
     def _run(self, job_id, legs, programs):
@@ -1067,9 +1078,10 @@ class BusinessScanService:
                         self.update(job_id, completed=completed, failures=list(failures), skipped=list(skipped))
                         continue
                     found_at = utc_now().isoformat()
-                    for date in dates:
+                    for found in dates:
                         hits.append({"program": program, "origin": leg["origin"], "destination": leg["destination"],
-                                     "month": leg["month"], "date": date, "foundAt": found_at})
+                                     "month": leg["month"], "date": found["date"],
+                                     "cabins": found["cabins"], "foundAt": found_at})
                     completed += 1
                     self.update(job_id, completed=completed, hits=list(hits))
             self.update(job_id, status="complete", progress=100,

@@ -23,7 +23,7 @@ const STOP_CODES = new Set(['ACCESS_RESTRICTED', 'USER_ACTION_REQUIRED', 'LOGIN_
 
 interface Destination { code: string; name: string }
 interface Config { origin: string; destinations: Destination[]; requestIntervalSeconds?: number }
-interface Hit { watchId?: string; program?: string; origin: string; destination: string; destinationName: string; date: string; sourceUpdatedAt: string | null; collectedAt: string }
+interface Hit { watchId?: string; program?: string; cabin?: 'prestige' | 'first'; origin: string; destination: string; destinationName: string; date: string; sourceUpdatedAt: string | null; collectedAt: string }
 
 const PROGRAM_NAMES: Record<string, string> = { 'korean-air': '대한항공', 'asiana-club': '아시아나' };
 // Asiana refuses rapid repeats, so its lookups are deliberately spaced out.
@@ -82,8 +82,8 @@ function loadPreviousHits(): Hit[] {
   }
 }
 
-function hitKey(h: Pick<Hit, 'origin' | 'destination' | 'date'> & { program?: string }): string {
-  return `${h.program ?? 'korean-air'}-${h.origin}-${h.destination}-${h.date}`;
+function hitKey(h: Pick<Hit, 'origin' | 'destination' | 'date'> & { program?: string; cabin?: string }): string {
+  return `${h.program ?? 'korean-air'}-${h.cabin ?? 'prestige'}-${h.origin}-${h.destination}-${h.date}`;
 }
 
 // Same 360-day public window the interactive app uses; only full months qualify.
@@ -164,7 +164,8 @@ function hitBlocks(hits: Hit[]): string[] {
   const byRoute = new Map<string, Hit[]>();
   for (const hit of hits) {
     const airline = PROGRAM_NAMES[hit.program ?? 'korean-air'] ?? hit.program ?? '';
-    const key = `${hit.origin}→${hit.destination} ${hit.destinationName} · ${airline}`;
+    const cabin = hit.cabin === 'first' ? '일등석(보너스/승급)' : '비즈니스';
+    const key = `${hit.origin}→${hit.destination} ${hit.destinationName} · ${airline} ${cabin}`;
     if (!byRoute.has(key)) byRoute.set(key, []);
     byRoute.get(key)!.push(hit);
   }
@@ -259,9 +260,11 @@ async function main(): Promise<void> {
       const observed = new Date().toISOString();
       for (const day of result.days) {
         if ((day.cabins ?? []).includes('business') && day.date >= watch.startDate && day.date <= watch.endDate) {
+          // Asiana's public calendar publishes economy and business only.
           found.push({
-            watchId: watch.id, program, origin, destination: destination.code, destinationName: destination.name,
-            date: day.date, sourceUpdatedAt: result.sourceAt ?? null, collectedAt: result.observedAt ?? observed,
+            watchId: watch.id, program, cabin: 'prestige', origin, destination: destination.code,
+            destinationName: destination.name, date: day.date,
+            sourceUpdatedAt: result.sourceAt ?? null, collectedAt: result.observedAt ?? observed,
           });
         }
       }
@@ -270,12 +273,15 @@ async function main(): Promise<void> {
     const result = await collectMonth(month, true, { origin, destination: destination.code, captureArtifacts: false });
     for (const day of result.data.dates) {
       // A watch asks about its own dates only, not the whole month.
-      if (day.prestigeAward && day.date >= watch.startDate && day.date <= watch.endDate) {
-        found.push({
-          watchId: watch.id, program, origin, destination: destination.code, destinationName: destination.name,
-          date: day.date, sourceUpdatedAt: result.data.sourceUpdatedAt ?? null, collectedAt: result.data.collectedAt,
-        });
-      }
+      if (day.date < watch.startDate || day.date > watch.endDate) continue;
+      const base = {
+        watchId: watch.id, program, origin, destination: destination.code, destinationName: destination.name,
+        date: day.date, sourceUpdatedAt: result.data.sourceUpdatedAt ?? null, collectedAt: result.data.collectedAt,
+      };
+      if (day.prestigeAward) found.push({ ...base, cabin: 'prestige' });
+      // Korean Air prints one combined 일등석 보너스/좌석승급 marker, so a first-class
+      // day is reported as found without claiming which of the two it is.
+      if (day.firstAwardOrUpgrade) found.push({ ...base, cabin: 'first' });
     }
     return found;
   }
