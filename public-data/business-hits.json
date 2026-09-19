@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-19T16:52:23.436Z",
+  "updatedAt": "2026-09-19T19:42:40.079Z",
   "hits": [
     {
       "watchId": "default",
@@ -75,7 +75,7 @@
       "destinationName": "로스앤젤레스",
       "date": "2026-10-10",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T16:48:29.258Z",
+      "collectedAt": "2026-09-19T19:38:43.529Z",
       "cabin": "prestige"
     },
     {
@@ -86,7 +86,7 @@
       "destinationName": "로스앤젤레스",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T16:50:19.704Z",
+      "collectedAt": "2026-09-19T19:40:34.716Z",
       "cabin": "prestige"
     },
     {
@@ -97,7 +97,7 @@
       "destinationName": "샌프란시스코",
       "date": "2027-08-03",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T16:52:09.185Z",
+      "collectedAt": "2026-09-19T19:42:25.933Z",
       "cabin": "prestige"
     },
     {
@@ -108,7 +108,7 @@
       "destinationName": "샌프란시스코",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T16:52:19.331Z",
+      "collectedAt": "2026-09-19T19:42:35.971Z",
       "cabin": "prestige"
     }
   ]
