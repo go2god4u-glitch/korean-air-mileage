@@ -9,8 +9,10 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chromium, type Browser, type Page } from 'playwright';
 import { collectMonth, CollectionError, validateFutureMonth, SOURCE_URL } from '../src/collector.js';
 import { CalendarParseError } from '../src/parser.js';
+import { searchAsiana } from '../src/partners/asiana.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_PATH = resolve(ROOT, 'config/business-watch.json');
@@ -20,7 +22,41 @@ const STOP_CODES = new Set(['ACCESS_RESTRICTED', 'USER_ACTION_REQUIRED', 'LOGIN_
 
 interface Destination { code: string; name: string }
 interface Config { origin: string; destinations: Destination[]; requestIntervalSeconds?: number }
-interface Hit { watchId?: string; origin: string; destination: string; destinationName: string; date: string; sourceUpdatedAt: string | null; collectedAt: string }
+interface Hit { watchId?: string; program?: string; origin: string; destination: string; destinationName: string; date: string; sourceUpdatedAt: string | null; collectedAt: string }
+
+const PROGRAM_NAMES: Record<string, string> = { 'korean-air': '대한항공', 'asiana-club': '아시아나' };
+// Asiana refuses rapid repeats, so its lookups are deliberately spaced out.
+const ASIANA_INTERVAL_MS = 20_000;
+const UNSUPPORTED_PATH = resolve(ROOT, 'public-data/unsupported-routes.json');
+const HEADLESS_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
+
+let asianaBrowser: Browser | null = null;
+let asianaPage: Page | null = null;
+
+/** Asiana only wires up its destination autocomplete in a real (headed) Chrome —
+ *  verified against the live site. CI runs this under Xvfb, so nothing is shown. */
+async function asianaWorkPage(): Promise<Page> {
+  if (asianaPage && !asianaPage.isClosed()) return asianaPage;
+  asianaBrowser = await chromium.launch({ channel: 'chrome', headless: false });
+  const context = await asianaBrowser.newContext({ locale: 'ko-KR', timezoneId: 'Asia/Seoul', userAgent: HEADLESS_USER_AGENT });
+  asianaPage = await context.newPage();
+  return asianaPage;
+}
+
+function loadUnsupported(): Set<string> {
+  try {
+    const parsed = JSON.parse(readFileSync(UNSUPPORTED_PATH, 'utf8'));
+    return new Set(Array.isArray(parsed.routes) ? parsed.routes : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveUnsupported(routes: Set<string>): void {
+  mkdirSync(dirname(UNSUPPORTED_PATH), { recursive: true });
+  writeFileSync(UNSUPPORTED_PATH, JSON.stringify({ routes: [...routes].sort() }, null, 2) + '\n', 'utf8');
+}
 
 function loadConfig(): Config {
   const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
@@ -42,8 +78,8 @@ function loadPreviousHits(): Hit[] {
   }
 }
 
-function hitKey(h: Pick<Hit, 'origin' | 'destination' | 'date'>): string {
-  return `${h.origin}-${h.destination}-${h.date}`;
+function hitKey(h: Pick<Hit, 'origin' | 'destination' | 'date'> & { program?: string }): string {
+  return `${h.program ?? 'korean-air'}-${h.origin}-${h.destination}-${h.date}`;
 }
 
 // Same 360-day public window the interactive app uses; only full months qualify.
@@ -123,7 +159,8 @@ async function notifyTelegram(header: string, blocks: string[]): Promise<void> {
 function hitBlocks(hits: Hit[]): string[] {
   const byRoute = new Map<string, Hit[]>();
   for (const hit of hits) {
-    const key = `${hit.origin}→${hit.destination} ${hit.destinationName}`;
+    const airline = PROGRAM_NAMES[hit.program ?? 'korean-air'] ?? hit.program ?? '';
+    const key = `${hit.origin}→${hit.destination} ${hit.destinationName} · ${airline}`;
     if (!byRoute.has(key)) byRoute.set(key, []);
     byRoute.get(key)!.push(hit);
   }
@@ -191,47 +228,87 @@ async function main(): Promise<void> {
     const config = loadConfig();
     const fallback: Watch = {
       id: 'default', label: '기본 관심 노선', origins: [config.origin], destinations: config.destinations.map((d) => d.code),
-      regions: [], startDate: '0000-00-00', endDate: '9999-99-99', programs: ['korean-air'],
+      regions: [], startDate: '0000-00-00', endDate: '9999-99-99', programs: ['korean-air', 'asiana-club'],
     };
     return [{ watch: fallback, destinations: config.destinations, months: candidateMonths() }];
   })();
 
   const merged: Hit[] = [];
   const newByWatch = new Map<string, Hit[]>();
-  const failures: { watch: string; destination: string; month: string; code: string }[] = [];
+  const failures: { watch: string; program: string; destination: string; month: string; code: string }[] = [];
+  const unsupported = loadUnsupported();
+  const restrictedPrograms = new Set<string>();
   let stoppedEarly = false;
   let stopReason = '';
+  let lastAsianaAt = 0;
+
+  /** One airline's view of one route/month, as the dates it has business seats on. */
+  async function lookup(program: string, origin: string, destination: { code: string; name: string }, month: string, watch: Watch): Promise<Hit[]> {
+    const found: Hit[] = [];
+    if (program === 'asiana-club') {
+      const wait = ASIANA_INTERVAL_MS - (Date.now() - lastAsianaAt);
+      if (wait > 0) await sleep(wait);
+      lastAsianaAt = Date.now();
+      const page = await asianaWorkPage();
+      const result = await searchAsiana(page, { origin, destination: destination.code, month }, () => false);
+      if (!('days' in result)) throw new CollectionError(result.code || 'SEARCH_FAILED', 'Asiana lookup failed.');
+      const observed = new Date().toISOString();
+      for (const day of result.days) {
+        if ((day.cabins ?? []).includes('business') && day.date >= watch.startDate && day.date <= watch.endDate) {
+          found.push({
+            watchId: watch.id, program, origin, destination: destination.code, destinationName: destination.name,
+            date: day.date, sourceUpdatedAt: result.sourceAt ?? null, collectedAt: result.observedAt ?? observed,
+          });
+        }
+      }
+      return found;
+    }
+    const result = await collectMonth(month, true, { origin, destination: destination.code, captureArtifacts: false });
+    for (const day of result.data.dates) {
+      // A watch asks about its own dates only, not the whole month.
+      if (day.prestigeAward && day.date >= watch.startDate && day.date <= watch.endDate) {
+        found.push({
+          watchId: watch.id, program, origin, destination: destination.code, destinationName: destination.name,
+          date: day.date, sourceUpdatedAt: result.data.sourceUpdatedAt ?? null, collectedAt: result.data.collectedAt,
+        });
+      }
+    }
+    return found;
+  }
 
   outer: for (const plan of plans) {
     const { watch } = plan;
     const previousKeys = new Set(previous.filter((h) => h.watchId === watch.id).map(hitKey));
-    for (const origin of watch.origins) {
+    for (const program of watch.programs) {
+     for (const origin of watch.origins) {
       for (const destination of plan.destinations) {
         if (destination.code === origin) continue;
+        const routeKey = `${program}|${origin}|${destination.code}`;
+        // An airline that does not fly the route is skipped, not retried hourly.
+        if (restrictedPrograms.has(program) || unsupported.has(routeKey)) continue;
         const found: Hit[] = [];
         let failed = false;
         for (const month of plan.months) {
           try {
-            const result = await collectMonth(month, true, { origin, destination: destination.code, captureArtifacts: false });
-            for (const day of result.data.dates) {
-              // A watch asks about its own dates only, not the whole month.
-              if (day.prestigeAward && day.date >= watch.startDate && day.date <= watch.endDate) {
-                found.push({
-                  watchId: watch.id, origin, destination: destination.code, destinationName: destination.name,
-                  date: day.date, sourceUpdatedAt: result.data.sourceUpdatedAt ?? null, collectedAt: result.data.collectedAt,
-                });
-              }
-            }
+            found.push(...await lookup(program, origin, destination, month, watch));
           } catch (error) {
             // Parse failures carry their own code; folding them into one generic
             // code is what made the last sweep's 53 failures undiagnosable.
             const code = error instanceof CollectionError || error instanceof CalendarParseError
               ? error.code : 'COLLECTION_FAILED';
-            failures.push({ watch: watch.label, destination: destination.code, month, code });
+            failures.push({ watch: watch.label, program, destination: destination.code, month, code });
             failed = true;
-            if (STOP_CODES.has(code)) { stoppedEarly = true; stopReason = code; break outer; }
+            if (code === 'ROUTE_UNAVAILABLE' || code === 'UNSUPPORTED_ROUTE') {
+              unsupported.add(routeKey);
+              break;
+            }
+            if (STOP_CODES.has(code)) {
+              // One airline refusing us must not cancel the other's sweep.
+              if (program !== 'korean-air') { restrictedPrograms.add(program); break; }
+              stoppedEarly = true; stopReason = code; break outer;
+            }
           }
-          await sleep(interval);
+          await sleep(program === 'asiana-club' ? 0 : interval);
         }
         if (failed) {
           // A lookup that failed is not proof the seats are gone.
@@ -242,15 +319,20 @@ async function main(): Promise<void> {
         const fresh = found.filter((h) => !previousKeys.has(hitKey(h)));
         if (fresh.length) newByWatch.set(watch.id, [...(newByWatch.get(watch.id) ?? []), ...fresh]);
       }
+     }
     }
   }
 
+  await asianaBrowser?.close().catch(() => {});
   mkdirSync(dirname(STATE_PATH), { recursive: true });
   writeFileSync(STATE_PATH, JSON.stringify({ updatedAt: new Date().toISOString(), hits: merged }, null, 2) + '\n', 'utf8');
+  saveUnsupported(unsupported);
 
   const newCount = [...newByWatch.values()].reduce((sum, list) => sum + list.length, 0);
-  console.log(`[business-scan] watches=${plans.length} hits=${merged.length} new=${newCount} failures=${failures.length}`);
-  for (const f of failures) console.log(`[business-scan] failed [${f.watch}] ${f.destination} ${f.month}: ${f.code}`);
+  const byProgram = (program: string) => merged.filter((h) => (h.program ?? 'korean-air') === program).length;
+  console.log(`[business-scan] watches=${plans.length} hits=${merged.length} (대한항공 ${byProgram('korean-air')} / 아시아나 ${byProgram('asiana-club')}) new=${newCount} failures=${failures.length}`);
+  for (const f of failures) console.log(`[business-scan] failed [${f.watch}] ${f.program} ${f.destination} ${f.month}: ${f.code}`);
+  if (restrictedPrograms.size) console.log(`[business-scan] restricted: ${[...restrictedPrograms].join(', ')}`);
 
   for (const plan of plans) {
     const fresh = newByWatch.get(plan.watch.id);
