@@ -1141,12 +1141,16 @@ class BusinessScanService:
         needs the logged-in Chrome, so when that is unavailable the findings keep
         their calendar result and say the live check did not run — a seat we could
         not re-check is not a seat we know is gone."""
-        checkable = [h for h in hits if h["program"] == "korean-air"]
+        checkable = list(hits)
+        refused = set()
         if not checkable:
             return hits
         for index, hit in enumerate(checkable):
             if job_id in self.cancelled:
                 break
+            if hit["program"] in refused:
+                hit.setdefault("live", "unchecked")
+                continue
             self.update(job_id, message="실시간 확인 중이에요 · %s→%s %s (%d/%d)" % (
                 hit["origin"], hit["destination"], hit["date"], index + 1, len(checkable)))
             cabin = "first" if "first" in hit.get("cabins", []) else "business"
@@ -1154,7 +1158,7 @@ class BusinessScanService:
                 result = self.award.worker.call(
                     "verify", {"origin": hit["origin"], "destination": hit["destination"],
                                "date": hit["date"], "cabin": cabin},
-                    program="korean-air", timeout=150)
+                    program=hit["program"], timeout=180)
             except SasError as error:
                 hit["live"], hit["liveCode"] = "unchecked", error.code
                 continue
@@ -1167,10 +1171,12 @@ class BusinessScanService:
             else:
                 hit["live"], hit["liveCode"] = "unchecked", result.get("code") or "SEARCH_FAILED"
                 if hit["liveCode"] in ("LOGIN_REQUIRED", "ACCESS_RESTRICTED"):
-                    # One refusal means every later check would be refused too.
+                    # One airline refusing says nothing about the other, so only
+                    # that airline's remaining checks are retired.
                     for remaining in checkable[index + 1:]:
-                        remaining["live"], remaining["liveCode"] = "unchecked", hit["liveCode"]
-                    break
+                        if remaining["program"] == hit["program"]:
+                            remaining["live"], remaining["liveCode"] = "unchecked", hit["liveCode"]
+                    refused.add(hit["program"])
             hit["liveCheckedAt"] = utc_now().isoformat()
             self.update(job_id, hits=list(hits))
         self.update(job_id, hits=list(hits))
@@ -1441,7 +1447,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/open-booking":
                 booking = booking_url(payload)
-                open_in_chrome(booking["url"])
+                # Prefer the browser the user signed into: the booking page then
+                # opens already logged in, as a tab rather than another window.
+                try:
+                    opened = self.server.award_service.worker.call(
+                        "open-url", {"url": booking["url"]}, program=booking["program"], timeout=60)
+                    booking["openedIn"] = "app" if opened.get("status") == "opened" else "chrome"
+                except SasError:
+                    booking["openedIn"] = "chrome"
+                if booking["openedIn"] != "app":
+                    open_in_chrome(booking["url"])
                 self.respond(booking)
                 return
             if self.path == "/api/watches/save":
