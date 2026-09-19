@@ -9,7 +9,8 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium, type Browser, type Page } from 'playwright';
+import type { Browser, Page } from 'playwright';
+import { openNativeChrome, NATIVE_USER_AGENT } from '../src/sas/native-chrome.js';
 import { collectMonth, CollectionError, validateFutureMonth, SOURCE_URL } from '../src/collector.js';
 import { CalendarParseError } from '../src/parser.js';
 import { searchAsiana } from '../src/partners/asiana.js';
@@ -34,13 +35,15 @@ const HEADLESS_USER_AGENT =
 let asianaBrowser: Browser | null = null;
 let asianaPage: Page | null = null;
 
-/** Asiana only wires up its destination autocomplete in a real (headed) Chrome —
- *  verified against the live site. CI runs this under Xvfb, so nothing is shown. */
+/** Asiana leaves its destination autocomplete unwired when navigator.webdriver is
+ *  true, and refuses Chrome's headless user agent outright. Launching Chrome
+ *  ourselves and attaching over CDP satisfies both — with no window at all. */
 async function asianaWorkPage(): Promise<Page> {
   if (asianaPage && !asianaPage.isClosed()) return asianaPage;
-  asianaBrowser = await chromium.launch({ channel: 'chrome', headless: false });
-  const context = await asianaBrowser.newContext({ locale: 'ko-KR', timezoneId: 'Asia/Seoul', userAgent: HEADLESS_USER_AGENT });
-  asianaPage = await context.newPage();
+  const native = await openNativeChrome(resolve(ROOT, 'data/asiana-scan-profile'),
+    { headless: true, userAgent: NATIVE_USER_AGENT });
+  asianaBrowser = native.browser;
+  asianaPage = native.context.pages()[0] ?? await native.context.newPage();
   return asianaPage;
 }
 

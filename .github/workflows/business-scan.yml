@@ -32,9 +32,6 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y google-chrome-stable
           fi
-          # Asiana needs a real (headed) Chrome; Xvfb gives it a display that
-          # nobody ever sees, since this runs on a GitHub runner.
-          sudo apt-get install -y xvfb
 
       - run: npm ci
 
@@ -42,7 +39,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: xvfb-run --auto-servernum -- node --import tsx scripts/business-scan.ts
+        run: node --import tsx scripts/business-scan.ts
 
       - name: Commit updated results
         run: |

@@ -31,12 +31,22 @@ async function availablePort(): Promise<number> {
     });
   });
 }
-export function chromeArguments(profile: string, port: number): string[] {
+// Airline sites refuse Chrome's own headless user agent, and Asiana skips wiring
+// up part of its form unless navigator.webdriver is false — which launching Chrome
+// ourselves and attaching over CDP gives us, unlike a Playwright-launched browser.
+export const NATIVE_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
+
+export function chromeArguments(profile: string, port: number, options: {headless?: boolean; userAgent?: string} = {}): string[] {
   if(!Number.isInteger(port) || port<1024 || port>65535) throw new Error('INVALID_PORT');
+  const extra = [
+    ...(options.headless ? ['--headless=new', '--window-size=1440,1100'] : ['--new-window']),
+    ...(options.userAgent ? [`--user-agent=${options.userAgent}`] : []),
+  ];
   return [`--user-data-dir=${profile}`, '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${port}`,
-    '--no-first-run', '--no-default-browser-check', '--new-window', 'about:blank'];
+    '--no-first-run', '--no-default-browser-check', ...extra, 'about:blank'];
 }
-export async function openNativeChrome(profile: string, options:{keepRunning?:boolean}={}): Promise<{browser:Browser,context:BrowserContext,process:ChildProcess|null,close:()=>Promise<void>}> {
+export async function openNativeChrome(profile: string, options:{keepRunning?:boolean;headless?:boolean;userAgent?:string}={}): Promise<{browser:Browser,context:BrowserContext,process:ChildProcess|null,close:()=>Promise<void>}> {
   mkdirSync(profile,{recursive:true});
   const endpointFile=join(profile,'local-debug-endpoint.json');
   if(options.keepRunning){
@@ -54,7 +64,7 @@ export async function openNativeChrome(profile: string, options:{keepRunning?:bo
     }catch{}
   }
   const port=await availablePort();
-  const child=spawn(chromeExecutable(),chromeArguments(profile,port),{stdio:'ignore',windowsHide:false});
+  const child=spawn(chromeExecutable(),chromeArguments(profile,port,{headless:options.headless,userAgent:options.userAgent}),{stdio:'ignore',windowsHide:false});
   let spawnError=false;child.once('error',()=>{spawnError=true;});
   let browser:Browser|undefined;
   try {

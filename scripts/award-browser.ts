@@ -1,7 +1,7 @@
 import {createInterface} from 'node:readline';
 import {resolve} from 'node:path';
-import {chromium, type Page} from 'playwright';
-import {openNativeChrome} from '../src/sas/native-chrome.js';
+import type {Page} from 'playwright';
+import {openNativeChrome, NATIVE_USER_AGENT} from '../src/sas/native-chrome.js';
 import {sasRestriction} from '../src/sas/status.js';
 import {searchSky} from '../src/partners/skyteam.js';
 import {searchStar} from '../src/partners/star-alliance.js';
@@ -9,17 +9,18 @@ import {searchPartnerMonth} from '../src/partners/month.js';
 import {searchAsiana} from '../src/partners/asiana.js';
 const urls:Record<string,string>={'korean-air':'https://www.koreanair.com/booking/search?bookingType=A&tripType=OW','asiana-club':'https://flyasiana.com/I/KR/KO/MileageSeatSearch.do','star-alliance':'https://flyasiana.com/C/KR/KO/index','skyteam':'https://www.koreanair.com/booking/search?bookingType=S&tripType=RT'};
 let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=new Map<string,Page>();let busy=false,generation=0;let monthProgram:string|null=null;let monthTask:ReturnType<typeof searchPartnerMonth>|null=null;
-// Asiana's public calendar needs no login, and the site accepts headless Chrome as
-// long as the headless user agent is replaced. It therefore gets its own windowless
-// browser instead of the shared, visible login profile the other programs need.
-let headless:{browser:import('playwright').Browser,page:Page}|null=null;
-const HEADLESS_USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
+// Asiana's public calendar needs no login, so it gets its own windowless browser
+// instead of the shared, visible profile the login-based programs need.
+// It leaves its destination autocomplete unwired when navigator.webdriver is
+// true, and refuses Chrome's headless user agent, so this launches Chrome itself
+// and attaches over CDP. No window is created.
+let headless:Awaited<ReturnType<typeof openNativeChrome>>|null=null;
+let headlessPageRef:Page|null=null;
 async function headlessPage(){
-  if(headless&&!headless.page.isClosed())return headless.page;
-  const browser=await chromium.launch({channel:'chrome',headless:true});
-  const context=await browser.newContext({locale:'ko-KR',timezoneId:'Asia/Seoul',userAgent:HEADLESS_USER_AGENT});
-  headless={browser,page:await context.newPage()};
-  return headless.page;
+  if(headlessPageRef&&!headlessPageRef.isClosed())return headlessPageRef;
+  headless=await openNativeChrome(resolve('data/asiana-local-profile'),{headless:true,userAgent:NATIVE_USER_AGENT});
+  headlessPageRef=headless.context.pages()[0]??await headless.context.newPage();
+  return headlessPageRef;
 }
 async function ensure(program:string,navigate=true){
   if(!native){native=await openNativeChrome(resolve('data/partner-chrome-profile'),{keepRunning:true});native.context.on('close',()=>{native=null;pages.clear();generation++;});}
@@ -48,4 +49,4 @@ async function run(c:any){
     return {status:'failed',code:'FORM_REQUIRED'};
   }finally{busy=false;}
 }
-const input=createInterface({input:process.stdin,crlfDelay:Infinity});input.on('line',line=>{let c:any;try{c=JSON.parse(line);if(typeof c.id!=='string'||line.length>8192)return;}catch{return;}void run(c).then(result=>process.stdout.write(JSON.stringify({id:c.id,result})+'\n')).catch(()=>process.stdout.write(JSON.stringify({id:c.id,result:{status:'failed',code:'BROWSER_ERROR'}})+'\n'));});input.on('close',()=>{generation++;void (async()=>{await monthTask?.catch(()=>{});await native?.close();process.exit(0);})();});
+const input=createInterface({input:process.stdin,crlfDelay:Infinity});input.on('line',line=>{let c:any;try{c=JSON.parse(line);if(typeof c.id!=='string'||line.length>8192)return;}catch{return;}void run(c).then(result=>process.stdout.write(JSON.stringify({id:c.id,result})+'\n')).catch(()=>process.stdout.write(JSON.stringify({id:c.id,result:{status:'failed',code:'BROWSER_ERROR'}})+'\n'));});input.on('close',()=>{generation++;void (async()=>{await monthTask?.catch(()=>{});await native?.close();await headless?.close().catch(()=>{});process.exit(0);})();});
