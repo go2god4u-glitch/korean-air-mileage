@@ -1,4 +1,305 @@
 {
-  "updatedAt": "2026-09-19T05:01:28.077Z",
-  "hits": []
+  "updatedAt": "2026-09-19T05:59:09.037Z",
+  "hits": [
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-01",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-02",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-03",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-04",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-05",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-06",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-07",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-08",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-09",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-10",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-11",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-12",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-13",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-14",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-15",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-16",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-17",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-18",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-19",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-20",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-21",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-22",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-23",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-24",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-25",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-26",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-27",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-28",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-29",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    },
+    {
+      "watchId": "aaaaaaaaaaaa",
+      "program": "asiana-club",
+      "origin": "ICN",
+      "destination": "NRT",
+      "destinationName": "도쿄/나리타",
+      "date": "2026-11-30",
+      "sourceUpdatedAt": "2026. 09. 18. 07:00",
+      "collectedAt": "2026-09-19T05:59:09.031Z"
+    }
+  ]
 }

@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { Browser, Page } from 'playwright';
+import type { Page } from 'playwright';
 import { openNativeChrome, NATIVE_USER_AGENT } from '../src/sas/native-chrome.js';
 import { collectMonth, CollectionError, validateFutureMonth, SOURCE_URL } from '../src/collector.js';
 import { CalendarParseError } from '../src/parser.js';
@@ -32,7 +32,9 @@ const UNSUPPORTED_PATH = resolve(ROOT, 'public-data/unsupported-routes.json');
 const HEADLESS_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
 
-let asianaBrowser: Browser | null = null;
+// Keep the launcher's own handle: closing the CDP connection alone leaves the
+// Chrome we spawned running, and the script then never exits.
+let asianaChrome: Awaited<ReturnType<typeof openNativeChrome>> | null = null;
 let asianaPage: Page | null = null;
 
 /** Asiana leaves its destination autocomplete unwired when navigator.webdriver is
@@ -40,10 +42,9 @@ let asianaPage: Page | null = null;
  *  ourselves and attaching over CDP satisfies both — with no window at all. */
 async function asianaWorkPage(): Promise<Page> {
   if (asianaPage && !asianaPage.isClosed()) return asianaPage;
-  const native = await openNativeChrome(resolve(ROOT, 'data/asiana-scan-profile'),
+  asianaChrome = await openNativeChrome(resolve(ROOT, 'data/asiana-scan-profile'),
     { headless: true, userAgent: NATIVE_USER_AGENT });
-  asianaBrowser = native.browser;
-  asianaPage = native.context.pages()[0] ?? await native.context.newPage();
+  asianaPage = asianaChrome.context.pages()[0] ?? await asianaChrome.context.newPage();
   return asianaPage;
 }
 
@@ -326,7 +327,7 @@ async function main(): Promise<void> {
     }
   }
 
-  await asianaBrowser?.close().catch(() => {});
+  await asianaChrome?.close().catch(() => {});
   mkdirSync(dirname(STATE_PATH), { recursive: true });
   writeFileSync(STATE_PATH, JSON.stringify({ updatedAt: new Date().toISOString(), hits: merged }, null, 2) + '\n', 'utf8');
   saveUnsupported(unsupported);
@@ -350,7 +351,14 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error('[business-scan] fatal error:', error);
-  process.exitCode = 1;
-});
+main()
+  .catch((error) => {
+    console.error('[business-scan] fatal error:', error);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    // A Chrome we spawned outlives its CDP connection and would hold the process
+    // open until the CI job times out, so it is always killed here too.
+    await asianaChrome?.close().catch(() => {});
+    process.exit(process.exitCode ?? 0);
+  });
