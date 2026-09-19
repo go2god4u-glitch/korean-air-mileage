@@ -1125,6 +1125,48 @@ class BusinessScanService:
                         for day in days if "business" in (day.get("cabins") or [])]
         raise AppError("COLLECTION_TIMEOUT", "아시아나 조회가 오래 걸려 중단했어요.")
 
+    def _verify_live(self, job_id, hits):
+        """Asks the airline's own booking search about each found date.
+
+        The public calendar is a once-daily snapshot; this is the live answer. It
+        needs the logged-in Chrome, so when that is unavailable the findings keep
+        their calendar result and say the live check did not run — a seat we could
+        not re-check is not a seat we know is gone."""
+        checkable = [h for h in hits if h["program"] == "korean-air"]
+        if not checkable:
+            return hits
+        for index, hit in enumerate(checkable):
+            if job_id in self.cancelled:
+                break
+            self.update(job_id, message="실시간 확인 중이에요 · %s→%s %s (%d/%d)" % (
+                hit["origin"], hit["destination"], hit["date"], index + 1, len(checkable)))
+            cabin = "first" if "first" in hit.get("cabins", []) else "business"
+            try:
+                result = self.award.worker.call(
+                    "verify", {"origin": hit["origin"], "destination": hit["destination"],
+                               "date": hit["date"], "cabin": cabin},
+                    program="korean-air", timeout=150)
+            except SasError as error:
+                hit["live"], hit["liveCode"] = "unchecked", error.code
+                continue
+            status = result.get("status")
+            if status == "available":
+                hit["live"] = "available"
+                hit["liveFlights"] = result.get("flights") or []
+            elif status == "empty":
+                hit["live"] = "gone"
+            else:
+                hit["live"], hit["liveCode"] = "unchecked", result.get("code") or "SEARCH_FAILED"
+                if hit["liveCode"] in ("LOGIN_REQUIRED", "ACCESS_RESTRICTED"):
+                    # One refusal means every later check would be refused too.
+                    for remaining in checkable[index + 1:]:
+                        remaining["live"], remaining["liveCode"] = "unchecked", hit["liveCode"]
+                    break
+            hit["liveCheckedAt"] = utc_now().isoformat()
+            self.update(job_id, hits=list(hits))
+        self.update(job_id, hits=list(hits))
+        return hits
+
     def _run(self, job_id, legs, programs):
         hits, failures, completed = [], [], 0
         total = len(legs) * len(programs)
@@ -1190,9 +1232,22 @@ class BusinessScanService:
                                      "collectedAt": found.get("collectedAt")})
                     completed += 1
                     self.update(job_id, completed=completed, hits=list(hits))
+            hits = self._verify_live(job_id, hits)
+            live = len([h for h in hits if h.get("live") == "available"])
+            gone = len([h for h in hits if h.get("live") == "gone"])
+            blocked = {h.get("liveCode") for h in hits if h.get("live") == "unchecked"}
+            if "LOGIN_REQUIRED" in blocked:
+                live_note = (" 실시간 확인은 대한항공 로그인이 필요해요 — 아래 '대한항공 로그인·예약 열기'에서"
+                             " 로그인한 뒤 다시 조회하면 지금 예약 가능한 자리만 보여드려요.")
+            elif "ACCESS_RESTRICTED" in blocked:
+                live_note = " 대한항공이 조회를 제한해 실시간 확인을 하지 못했어요."
+            elif live or gone:
+                live_note = " 실시간 확인 결과 %d건 남아 있고 %d건은 이미 나갔어요." % (live, gone)
+            else:
+                live_note = ""
             self.update(job_id, status="complete", progress=100,
-                        message="스캔을 마쳤어요. 비즈니스석 %d건을 찾았어요.%s%s" % (
-                            len(hits),
+                        message="스캔을 마쳤어요. 비즈니스석 %d건을 찾았어요.%s%s%s" % (
+                            len(hits), live_note,
                             " 미취항 노선 %d개는 건너뛰었어요." % len(skipped) if skipped else "",
                             " 아시아나는 접속이 제한되어 건너뛰었어요." if "asiana-club" in restricted_programs else ""),
                         hits=hits, failures=failures, skipped=skipped)

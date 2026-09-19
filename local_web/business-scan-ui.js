@@ -350,8 +350,18 @@
           `${hit.date} ${origin}→${destination} ${first ? '일등석' : '비즈니스'} 예매 화면 열기`);
         card.append(node('span', 'date-top', `${hit.date.slice(0, 4)}년 ${Number(hit.date.slice(5, 7))}월`),
           node('span', 'date-number', String(Number(hit.date.slice(8, 10)))),
-          node('span', 'date-badge' + (first ? ' first-badge' : ''), first ? '일등석' : '비즈니스'),
-          node('span', 'date-go', '예매하기 ↗'));
+          node('span', 'date-badge' + (first ? ' first-badge' : ''), first ? '일등석' : '비즈니스'));
+        // The live answer overrides the calendar's: it is the one that can be booked.
+        if (hit.live === 'available') {
+          card.classList.add('live-ok');
+          card.append(node('span', 'date-live ok', '실시간 확인됨'));
+        } else if (hit.live === 'gone') {
+          card.classList.add('live-gone');
+          card.append(node('span', 'date-live gone', '방금 나갔어요'));
+        } else if (hit.live === 'unchecked') {
+          card.append(node('span', 'date-live unknown', '실시간 확인 못함'));
+        }
+        card.append(node('span', 'date-go', '예매하기 ↗'));
         card.addEventListener('click', () => void openBooking(hit, program, origin, destination, card));
         grid.append(card);
       }

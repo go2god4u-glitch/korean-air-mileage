@@ -7,6 +7,7 @@ import {searchSky} from '../src/partners/skyteam.js';
 import {searchStar} from '../src/partners/star-alliance.js';
 import {searchPartnerMonth} from '../src/partners/month.js';
 import {searchAsiana} from '../src/partners/asiana.js';
+import {searchKoreanAirAward} from '../src/partners/korean-air-award.js';
 const urls:Record<string,string>={'korean-air':'https://www.koreanair.com/booking/search?bookingType=A&tripType=OW','asiana-club':'https://flyasiana.com/I/KR/KO/MileageSeatSearch.do','star-alliance':'https://flyasiana.com/C/KR/KO/index','skyteam':'https://www.koreanair.com/booking/search?bookingType=S&tripType=RT'};
 let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=new Map<string,Page>();let busy=false,generation=0;let monthProgram:string|null=null;let monthTask:ReturnType<typeof searchPartnerMonth>|null=null;
 // Asiana's public calendar needs no login, so it gets its own windowless browser
@@ -42,6 +43,12 @@ async function run(c:any){
   }
   try{
     if(c.action==='search'&&c.program==='asiana-club')return await searchAsiana(await headlessPage(),c.query,()=>generation!==initial);
+    // Live check of one date against the airline's own booking search. Needs the
+    // shared logged-in Chrome, unlike the public calendar.
+    if(c.action==='verify'&&c.program==='korean-air'){
+      const p=await ensure('korean-air',false);
+      return await searchKoreanAirAward(p,c.query,()=>generation!==initial);
+    }
     const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login');if(c.action==='confirm-login'){if((await state(c.program)).state==='restricted')return {state:'restricted'};await p.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});for(let i=0;i<20;i++){const result=await state(c.program);if(result.state!=='ready'||result.authenticated||c.program==='asiana-club')return result;await p.waitForTimeout(300);}return state(c.program);}if(c.action==='open'){await p.bringToFront();return state(c.program);}if((await state(c.program)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
     if(c.program==='asiana-club')return await searchAsiana(p,c.query,()=>generation!==initial);
     if(c.program==='skyteam')return await searchSky(p,c.query,()=>generation!==initial);
