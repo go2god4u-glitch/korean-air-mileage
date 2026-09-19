@@ -10,6 +10,18 @@
   };
   const programNames = { 'korean-air': '대한항공', 'asiana-club': '아시아나' };
   let catalog = null, config = null, polling = null, running = false, currentJobId = null, startedAt = 0;
+  let flightHours = {};
+
+  function hoursFor(code) {
+    return flightHours[code];
+  }
+
+  function meetsDuration(code, minimum) {
+    if (!minimum) return true;
+    const hours = hoursFor(code);
+    // An unknown duration is not evidence of a short flight, so it stays in.
+    return hours === undefined || hours >= minimum;
+  }
 
   function clockTime(value) {
     const parsed = new Date(value);
@@ -116,15 +128,23 @@
     $('scan-end-month').value = config.minMonth;
   }
 
+  /** Regions are expanded here so the duration filter can drop short hops before
+   *  the server ever looks them up. */
   function selection() {
     const origins = checkedValues('scan-origins');
     const regions = checkedValues('scan-regions');
     const extra = $('scan-extra-destinations').value.trim().toUpperCase();
-    const destinations = extra ? extra.split(/[^A-Z]+/).filter((code) => /^[A-Z]{3}$/.test(code)) : [];
-    const programs = checkedValues('scan-programs');
+    const typed = extra ? extra.split(/[^A-Z]+/).filter((code) => /^[A-Z]{3}$/.test(code)) : [];
+    const minimum = Number($('scan-min-hours').value) || 0;
+    const picked = new Set(typed);
+    for (const airport of catalog?.list ?? []) if (regions.includes(airport.region)) picked.add(airport.code);
+    const chosen = origins.length ? origins : ['ICN'];
+    for (const origin of chosen) picked.delete(origin);
     return {
-      origins: origins.length ? origins : ['ICN'],
-      regions, destinations, programs,
+      origins: chosen,
+      regions: [],
+      destinations: [...picked].filter((code) => meetsDuration(code, minimum)),
+      programs: checkedValues('scan-programs'),
       startMonth: $('scan-start-month').value,
       endMonth: $('scan-end-month').value,
     };
@@ -140,8 +160,18 @@
     if (!catalog || !config) return;
     const picked = selection();
     const regionCodes = new Set(picked.destinations);
-    for (const airport of catalog.list) if (picked.regions.includes(airport.region)) regionCodes.add(airport.code);
-    for (const origin of picked.origins) regionCodes.delete(origin);
+    const minimum = Number($('scan-min-hours').value) || 0;
+    const dropped = (() => {
+      let count = 0;
+      const regions = checkedValues('scan-regions');
+      for (const airport of catalog.list) {
+        if (regions.includes(airport.region) && !picked.origins.includes(airport.code) && !meetsDuration(airport.code, minimum)) count++;
+      }
+      return count;
+    })();
+    $('scan-hours-note').textContent = minimum
+      ? `${minimum}시간 미만 노선 ${dropped}곳은 제외했어요. 비행시간을 모르는 공항은 남겨둬요.`
+      : '비행시간에 관계없이 모두 조회해요.';
     const months = Math.max(0, monthCount(picked.startMonth, picked.endMonth));
     const combos = picked.origins.length * regionCodes.size * months;
     const requests = combos * Math.max(1, picked.programs.length);
@@ -189,7 +219,9 @@
       detail.append(node('span', 'direction', programNames[program] || program));
       const route = node('div', 'route-line');
       route.append(node('h3', null, origin), node('span', 'arrow', '→'), node('h3', null, destination));
-      detail.append(route, node('div', 'route-details', `${airportName(destination)} · 비즈니스 보너스 좌석`));
+      const hours = hoursFor(destination);
+      detail.append(route, node('div', 'route-details',
+        `${airportName(destination)} · 비즈니스 보너스 좌석${hours ? ` · 약 ${hours}시간` : ''}`));
       const count = node('div', 'result-count');
       count.append(node('strong', null, String(routeHits.length)), node('span', null, '일'),
         node('div', 'count-label', '좌석 표시가 있는 날짜'));
@@ -297,27 +329,34 @@
   }
 
   function showTab(name) {
-    const scan = name === 'scan';
-    $('scan-tab-panel').hidden = !scan;
+    $('scan-tab-panel').hidden = name !== 'scan';
+    $('watch-tab-panel').hidden = name !== 'watch';
     for (const section of ['search-section', 'award-area', 'results-area']) {
       const element = document.getElementById(section);
-      if (element) element.hidden = scan || element.dataset.hiddenByProgram === 'true';
+      if (element) element.hidden = name !== 'single' || element.dataset.hiddenByProgram === 'true';
     }
-    $('tab-single').setAttribute('aria-selected', String(!scan));
-    $('tab-scan').setAttribute('aria-selected', String(scan));
+    for (const [id, tab] of [['tab-single', 'single'], ['tab-scan', 'scan'], ['tab-watch', 'watch']]) {
+      $(id).setAttribute('aria-selected', String(name === tab));
+    }
+    if (name === 'watch') window.WatchesUI?.reload();
   }
 
   async function init() {
     $('tab-single').addEventListener('click', () => showTab('single'));
     $('tab-scan').addEventListener('click', () => showTab('scan'));
+    $('tab-watch').addEventListener('click', () => showTab('watch'));
     $('scan-form').addEventListener('submit', startScan);
     $('scan-cancel').addEventListener('click', cancelScan);
     $('scan-start-month').addEventListener('change', updateEstimate);
     $('scan-end-month').addEventListener('change', updateEstimate);
     $('scan-extra-destinations').addEventListener('input', updateEstimate);
+    $('scan-min-hours').addEventListener('change', updateEstimate);
     for (const input of $('scan-programs').querySelectorAll('input')) input.addEventListener('change', updateEstimate);
     try {
-      const [routes, appConfig] = await Promise.all([api('/api/routes'), api('/api/config')]);
+      const [routes, appConfig, hours] = await Promise.all([
+        api('/api/routes'), api('/api/config'), api('/api/flight-hours').catch(() => ({ hours: {} })),
+      ]);
+      flightHours = hours.hours || {};
       const airports = new Map();
       for (const airport of routes.airports) airports.set(airport.code, airport);
       catalog = { airports, list: routes.airports };

@@ -13,12 +13,13 @@ import { collectMonth, CollectionError, validateFutureMonth, SOURCE_URL } from '
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_PATH = resolve(ROOT, 'config/business-watch.json');
+const WATCHES_PATH = resolve(ROOT, 'config/watches.json');
 const STATE_PATH = resolve(ROOT, 'public-data/business-hits.json');
 const STOP_CODES = new Set(['ACCESS_RESTRICTED', 'USER_ACTION_REQUIRED', 'LOGIN_REQUIRED']);
 
 interface Destination { code: string; name: string }
 interface Config { origin: string; destinations: Destination[]; requestIntervalSeconds?: number }
-interface Hit { origin: string; destination: string; destinationName: string; date: string; sourceUpdatedAt: string | null; collectedAt: string }
+interface Hit { watchId?: string; origin: string; destination: string; destinationName: string; date: string; sourceUpdatedAt: string | null; collectedAt: string }
 
 function loadConfig(): Config {
   const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
@@ -140,70 +141,118 @@ function hitBlocks(hits: Hit[]): string[] {
     });
 }
 
-async function main(): Promise<void> {
-  const config = loadConfig();
-  const origin = config.origin;
-  const intervalMs = Math.max(0, (config.requestIntervalSeconds ?? 4) * 1000);
-  const months = candidateMonths();
-  const previous = loadPreviousHits();
+interface Watch {
+  id: string; label: string; origins: string[]; destinations: string[]; regions: string[];
+  startDate: string; endDate: string; programs: string[]; enabled?: boolean;
+}
 
-  const currentByDestination = new Map<string, Hit[]>();
-  const failures: { destination: string; month: string; code: string }[] = [];
+function loadWatches(): Watch[] {
+  try {
+    const parsed = JSON.parse(readFileSync(WATCHES_PATH, 'utf8'));
+    return Array.isArray(parsed.watches) ? parsed.watches.filter((w: Watch) => w.enabled !== false) : [];
+  } catch {
+    return [];
+  }
+}
+
+function airportsByRegion(): Map<string, { code: string; name: string }[]> {
+  const grouped = new Map<string, { code: string; name: string }[]>();
+  try {
+    const catalog = JSON.parse(readFileSync(resolve(ROOT, 'config/award-routes.json'), 'utf8'));
+    for (const airport of catalog.airports ?? []) {
+      if (!grouped.has(airport.region)) grouped.set(airport.region, []);
+      grouped.get(airport.region)!.push({ code: airport.code, name: airport.name });
+    }
+  } catch { /* the watch can still use explicit codes */ }
+  return grouped;
+}
+
+/** Turns one watch into the concrete destinations and months it needs looked up. */
+function planWatch(watch: Watch, regions: Map<string, { code: string; name: string }[]>) {
+  const names = new Map<string, string>();
+  for (const list of regions.values()) for (const a of list) names.set(a.code, a.name);
+  const destinations = new Map<string, string>();
+  for (const code of watch.destinations) destinations.set(code, names.get(code) ?? code);
+  for (const region of watch.regions) for (const a of regions.get(region) ?? []) destinations.set(a.code, a.name);
+  for (const origin of watch.origins) destinations.delete(origin);
+  const months = candidateMonths().filter((m) => m >= watch.startDate.slice(0, 7) && m <= watch.endDate.slice(0, 7));
+  return { destinations: [...destinations.entries()].map(([code, name]) => ({ code, name })), months };
+}
+
+async function main(): Promise<void> {
+  const watches = loadWatches();
+  const regions = airportsByRegion();
+  const previous = loadPreviousHits();
+  const interval = 4000;
+
+  // Without a standing watch the scheduled run still sweeps the curated list.
+  const plans = watches.length ? watches.map((watch) => ({ watch, ...planWatch(watch, regions) })) : (() => {
+    const config = loadConfig();
+    const fallback: Watch = {
+      id: 'default', label: '기본 관심 노선', origins: [config.origin], destinations: config.destinations.map((d) => d.code),
+      regions: [], startDate: '0000-00-00', endDate: '9999-99-99', programs: ['korean-air'],
+    };
+    return [{ watch: fallback, destinations: config.destinations, months: candidateMonths() }];
+  })();
+
+  const merged: Hit[] = [];
+  const newByWatch = new Map<string, Hit[]>();
+  const failures: { watch: string; destination: string; month: string; code: string }[] = [];
   let stoppedEarly = false;
   let stopReason = '';
 
-  outer: for (const destination of config.destinations) {
-    const hits: Hit[] = [];
-    let destinationFailed = false;
-    for (const month of months) {
-      try {
-        const result = await collectMonth(month, true, { origin, destination: destination.code, captureArtifacts: false });
-        for (const day of result.data.dates) {
-          if (day.prestigeAward) {
-            hits.push({
-              origin, destination: destination.code, destinationName: destination.name, date: day.date,
-              sourceUpdatedAt: result.data.sourceUpdatedAt ?? null, collectedAt: result.data.collectedAt,
-            });
+  outer: for (const plan of plans) {
+    const { watch } = plan;
+    const previousKeys = new Set(previous.filter((h) => h.watchId === watch.id).map(hitKey));
+    for (const origin of watch.origins) {
+      for (const destination of plan.destinations) {
+        if (destination.code === origin) continue;
+        const found: Hit[] = [];
+        let failed = false;
+        for (const month of plan.months) {
+          try {
+            const result = await collectMonth(month, true, { origin, destination: destination.code, captureArtifacts: false });
+            for (const day of result.data.dates) {
+              // A watch asks about its own dates only, not the whole month.
+              if (day.prestigeAward && day.date >= watch.startDate && day.date <= watch.endDate) {
+                found.push({
+                  watchId: watch.id, origin, destination: destination.code, destinationName: destination.name,
+                  date: day.date, sourceUpdatedAt: result.data.sourceUpdatedAt ?? null, collectedAt: result.data.collectedAt,
+                });
+              }
+            }
+          } catch (error) {
+            const code = error instanceof CollectionError ? error.code : 'COLLECTION_FAILED';
+            failures.push({ watch: watch.label, destination: destination.code, month, code });
+            failed = true;
+            if (STOP_CODES.has(code)) { stoppedEarly = true; stopReason = code; break outer; }
           }
+          await sleep(interval);
         }
-      } catch (error) {
-        const code = error instanceof CollectionError ? error.code : 'COLLECTION_FAILED';
-        failures.push({ destination: destination.code, month, code });
-        destinationFailed = true;
-        if (STOP_CODES.has(code)) {
-          stoppedEarly = true;
-          stopReason = code;
-          break outer;
+        if (failed) {
+          // A lookup that failed is not proof the seats are gone.
+          merged.push(...previous.filter((h) => h.watchId === watch.id && h.origin === origin && h.destination === destination.code));
+          continue;
         }
+        merged.push(...found);
+        const fresh = found.filter((h) => !previousKeys.has(hitKey(h)));
+        if (fresh.length) newByWatch.set(watch.id, [...(newByWatch.get(watch.id) ?? []), ...fresh]);
       }
-      await sleep(intervalMs);
-    }
-    if (!destinationFailed) currentByDestination.set(destination.code, hits);
-  }
-
-  // A destination that failed this run keeps its last known hits rather than
-  // silently reporting "no seats" for a fetch problem that isn't a real close-out.
-  const merged: Hit[] = [];
-  for (const destination of config.destinations) {
-    if (currentByDestination.has(destination.code)) {
-      merged.push(...currentByDestination.get(destination.code)!);
-    } else {
-      merged.push(...previous.filter((h) => h.destination === destination.code));
     }
   }
-
-  const previousKeys = new Set(previous.map(hitKey));
-  const newHits = merged.filter((h) => !previousKeys.has(hitKey(h)));
 
   mkdirSync(dirname(STATE_PATH), { recursive: true });
   writeFileSync(STATE_PATH, JSON.stringify({ updatedAt: new Date().toISOString(), hits: merged }, null, 2) + '\n', 'utf8');
 
-  console.log(`[business-scan] destinations=${config.destinations.length} months=${months.length} hits=${merged.length} new=${newHits.length} failures=${failures.length}`);
-  for (const f of failures) console.log(`[business-scan] failed ${origin}-${f.destination} ${f.month}: ${f.code}`);
+  const newCount = [...newByWatch.values()].reduce((sum, list) => sum + list.length, 0);
+  console.log(`[business-scan] watches=${plans.length} hits=${merged.length} new=${newCount} failures=${failures.length}`);
+  for (const f of failures) console.log(`[business-scan] failed [${f.watch}] ${f.destination} ${f.month}: ${f.code}`);
 
-  if (newHits.length) {
-    await notifyTelegram(`✈️ 새 비즈니스 마일리지 좌석 ${newHits.length}건`,
-      [...hitBlocks(newHits), `직접 확인: ${SOURCE_URL}`]);
+  for (const plan of plans) {
+    const fresh = newByWatch.get(plan.watch.id);
+    if (!fresh?.length) continue;
+    await notifyTelegram(`✈️ [${plan.watch.label}] 비즈니스석 ${fresh.length}건`,
+      [...hitBlocks(fresh), `기간: ${plan.watch.startDate} ~ ${plan.watch.endDate}\n직접 확인: ${SOURCE_URL}`]);
   }
   if (stoppedEarly) {
     await notifyTelegram('⚠️ 자동 스캔 중단',

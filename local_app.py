@@ -315,6 +315,149 @@ def validate_business_scan_request(raw, today=None):
     return {"origins": origins, "destinations": destinations, "months": months, "programs": programs}
 
 
+WATCHES_PATH = ROOT / "config" / "watches.json"
+
+
+def read_watches(root=ROOT):
+    path = Path(root) / "config" / "watches.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError:
+        return {"watches": []}
+    except ValueError:
+        raise AppError("WATCHES_INVALID", "알림 신청 목록을 읽지 못했어요.", 503)
+    watches = value.get("watches")
+    return {"watches": watches if isinstance(watches, list) else []}
+
+
+def validate_watch(raw, today=None):
+    """A watch is a standing request: these routes, these dates, alert me when a
+    business seat shows up. It is stored in the repository so the scheduled cloud
+    scan reads exactly what the screen shows."""
+    if not isinstance(raw, dict):
+        raise AppError("INVALID_INPUT", "알림 조건을 확인해 주세요.")
+    catalog = read_route_catalog()
+    known_regions = {airport["region"] for airport in catalog["airports"]}
+
+    def codes(field, label):
+        values = raw.get(field, [])
+        if not isinstance(values, list):
+            raise AppError("INVALID_INPUT", "%s 목록을 확인해 주세요." % label)
+        result, seen = [], set()
+        for value in values:
+            code = str(value).strip().upper()
+            if not re.fullmatch(r"[A-Z]{3}", code) or code in seen:
+                raise AppError("INVALID_AIRPORT", "%s 공항 코드를 확인해 주세요." % label)
+            seen.add(code)
+            result.append(code)
+        return result
+
+    origins = codes("origins", "출발") or ["ICN"]
+    destinations = codes("destinations", "도착")
+    regions = raw.get("regions", [])
+    if not isinstance(regions, list) or any(str(r) not in known_regions for r in regions):
+        raise AppError("INVALID_REGION", "알 수 없는 지역이에요. 목록에서 다시 선택해 주세요.")
+    regions = [str(r) for r in regions]
+    if not destinations and not regions:
+        raise AppError("INVALID_INPUT", "도착 공항이나 지역을 하나 이상 선택해 주세요.")
+
+    dates = {}
+    for field, label in (("startDate", "시작 날짜"), ("endDate", "끝 날짜")):
+        value = raw.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise AppError("INVALID_DATE", "%s를 선택해 주세요." % label)
+        try:
+            dates[field] = date.fromisoformat(value)
+        except ValueError:
+            raise AppError("INVALID_DATE", "%s를 올바르게 선택해 주세요." % label)
+    if dates["endDate"] < dates["startDate"]:
+        raise AppError("INVALID_DATE", "끝 날짜는 시작 날짜보다 앞설 수 없어요.")
+
+    programs = raw.get("programs", list(BUSINESS_SCAN_PROGRAMS))
+    if not isinstance(programs, list) or not programs or any(p not in BUSINESS_SCAN_PROGRAMS for p in programs):
+        raise AppError("INVALID_INPUT", "조회할 프로그램을 선택해 주세요.")
+
+    label = str(raw.get("label", "")).strip()[:60]
+    identifier = raw.get("id")
+    if identifier is not None and (not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{12}", identifier)):
+        raise AppError("INVALID_INPUT", "알림 신청을 찾지 못했어요.")
+    return {
+        "id": identifier or uuid.uuid4().hex[:12],
+        "label": label or "%s → %s" % (origins[0], ", ".join(destinations + regions)[:40]),
+        "origins": origins, "destinations": destinations, "regions": regions,
+        "startDate": raw["startDate"], "endDate": raw["endDate"],
+        "programs": [p for p in BUSINESS_SCAN_PROGRAMS if p in programs],
+        "enabled": bool(raw.get("enabled", True)),
+        "updatedAt": utc_now().isoformat(),
+    }
+
+
+def save_watches(watches, root=ROOT):
+    path = Path(root) / "config" / "watches.json"
+    temporary = path.with_name(path.name + ".%s.tmp" % uuid.uuid4().hex)
+    try:
+        with open(temporary, "x", encoding="utf-8") as output:
+            json.dump({"watches": watches}, output, ensure_ascii=False, indent=2)
+            output.write("\n")
+        os.replace(str(temporary), str(path))
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def git_command(arguments, root=ROOT):
+    git = shutil.which("git")
+    if not git:
+        raise AppError("GIT_MISSING", "git을 찾지 못해 GitHub에 반영하지 못했어요.", 503)
+    result = subprocess.run([git] + arguments, cwd=str(root), capture_output=True, text=True, timeout=90)
+    return result
+
+
+def sync_watches_to_github(root=ROOT):
+    """Publishes the watch list so the scheduled cloud scan uses it."""
+    status = git_command(["status", "--porcelain", "config/watches.json"], root)
+    if status.returncode != 0:
+        raise AppError("GIT_FAILED", "변경 사항을 확인하지 못했어요.", 503)
+    if status.stdout.strip():
+        add = git_command(["add", "config/watches.json"], root)
+        commit = git_command(["commit", "-m", "chore: update alert watches"], root)
+        if add.returncode != 0 or commit.returncode != 0:
+            raise AppError("GIT_FAILED", "변경 사항을 저장하지 못했어요.", 503)
+    pull = git_command(["pull", "--rebase", "origin", "main"], root)
+    if pull.returncode != 0:
+        raise AppError("GIT_FAILED", "GitHub의 최신 내용을 가져오지 못했어요. 터미널에서 확인해 주세요.", 503)
+    push = git_command(["push", "origin", "main"], root)
+    if push.returncode != 0:
+        raise AppError("GIT_FAILED", "GitHub에 올리지 못했어요. 터미널에서 git push를 확인해 주세요.", 503)
+    return {"synced": True, "message": "GitHub에 반영했어요. 다음 정시 실행부터 적용돼요."}
+
+
+def watches_sync_state(root=ROOT):
+    """Whether the saved watches differ from what GitHub already has."""
+    status = git_command(["status", "--porcelain", "config/watches.json"], root)
+    pending = bool(status.stdout.strip()) if status.returncode == 0 else None
+    ahead = git_command(["rev-list", "--count", "origin/main..HEAD"], root)
+    unpushed = int(ahead.stdout.strip() or 0) if ahead.returncode == 0 else 0
+    return {"pendingChanges": pending, "unpushedCommits": unpushed}
+
+
+def cloud_runs(limit=3, root=ROOT):
+    """Best-effort read of the scheduled cloud scans through the GitHub CLI."""
+    gh = shutil.which("gh")
+    if not gh:
+        return {"available": False, "runs": []}
+    try:
+        result = subprocess.run(
+            [gh, "run", "list", "--workflow=business-scan.yml", "--limit", str(limit),
+             "--json", "status,conclusion,createdAt,updatedAt,databaseId,url"],
+            cwd=str(root), capture_output=True, text=True, timeout=25)
+        if result.returncode != 0:
+            return {"available": False, "runs": []}
+        return {"available": True, "runs": json.loads(result.stdout or "[]")}
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {"available": False, "runs": []}
+
+
 def validate_handoff_request(raw, today=None):
     """Only explicit, valid dates attached to the displayed month are forwarded."""
     params = validate_request(raw, today)
@@ -1041,10 +1184,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(self.server.service.store.result(params))
             elif re.fullmatch(r"/api/jobs/[a-f0-9]{32}", target.path):
                 self.respond(self.server.service.get(target.path.rsplit("/", 1)[-1]))
+            elif target.path == "/api/flight-hours":
+                try:
+                    self.respond(json.loads((ROOT / "config" / "flight-hours.json").read_text(encoding="utf-8")))
+                except (OSError, ValueError):
+                    raise AppError("FLIGHT_HOURS_UNAVAILABLE", "비행시간 정보를 불러오지 못했어요.", 503)
+            elif target.path == "/api/watches":
+                self.respond(dict(read_watches(), sync=watches_sync_state()))
+            elif target.path == "/api/watches/cloud":
+                self.respond(cloud_runs())
             elif re.fullmatch(r"/api/business-scan/jobs/[a-f0-9]{32}", target.path):
                 self.respond(self.server.business_scan_service.get(target.path.rsplit("/", 1)[-1]))
-            elif target.path == "/business-scan-ui.js":
-                body = (ROOT / "local_web" / "business-scan-ui.js").read_bytes()
+            elif target.path in ("/business-scan-ui.js", "/watches-ui.js"):
+                body = (ROOT / "local_web" / target.path.lstrip("/")).read_bytes()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/javascript; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -1062,7 +1214,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self.allowed(mutation=True)
-            if self.path not in ("/api/search", "/api/business-scan", "/api/business-scan/cancel", "/api/open-airline", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
+            if self.path not in ("/api/search", "/api/business-scan", "/api/business-scan/cancel",
+                                 "/api/watches/save", "/api/watches/delete", "/api/watches/sync", "/api/open-airline", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
                 raise AppError("NOT_FOUND", "요청한 기능을 찾을 수 없어요.", 404)
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
                 raise AppError("INVALID_INPUT", "검색 조건을 확인해 주세요.", 415)
@@ -1098,6 +1251,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/business-scan":
                 self.respond({"jobId": self.server.business_scan_service.start(payload)}, 202)
+                return
+            if self.path == "/api/watches/save":
+                watch = validate_watch(payload)
+                watches = [w for w in read_watches()["watches"] if w.get("id") != watch["id"]]
+                if len(watches) >= 40:
+                    raise AppError("TOO_MANY_WATCHES", "알림 신청은 최대 40개까지 만들 수 있어요.")
+                watches.append(watch)
+                save_watches(watches)
+                self.respond({"watch": watch, "watches": watches, "sync": watches_sync_state()})
+                return
+            if self.path == "/api/watches/delete":
+                identifier = payload.get("id") if isinstance(payload, dict) else None
+                if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{12}", identifier):
+                    raise AppError("INVALID_INPUT", "삭제할 알림 신청을 찾지 못했어요.")
+                watches = [w for w in read_watches()["watches"] if w.get("id") != identifier]
+                save_watches(watches)
+                self.respond({"watches": watches, "sync": watches_sync_state()})
+                return
+            if self.path == "/api/watches/sync":
+                self.respond(dict(sync_watches_to_github(), sync=watches_sync_state()))
                 return
             if self.path == "/api/business-scan/cancel":
                 job_id = payload.get("jobId") if isinstance(payload, dict) else None

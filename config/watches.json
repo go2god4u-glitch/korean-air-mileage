@@ -1,0 +1,22 @@
+{
+  "watches": [
+    {
+      "id": "efdff1172f2a",
+      "label": "파리 겨울휴가",
+      "origins": [
+        "ICN"
+      ],
+      "destinations": [
+        "CDG"
+      ],
+      "regions": [],
+      "startDate": "2026-12-20",
+      "endDate": "2027-01-10",
+      "programs": [
+        "korean-air"
+      ],
+      "enabled": true,
+      "updatedAt": "2026-09-19T03:59:03.022839+00:00"
+    }
+  ]
+}
