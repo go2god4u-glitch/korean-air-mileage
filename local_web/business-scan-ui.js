@@ -348,6 +348,18 @@
       pollFailures = 0;
       const percent = job.total ? Math.round((job.completed / job.total) * 100) : 0;
       const live = job.status === 'running' || job.status === 'queued';
+      if (job.status === 'interrupted') {
+        clearInterval(polling);
+        polling = null;
+        running = false;
+        currentJobId = null;
+        $('scan-cancel').hidden = true;
+        $('scan-button').textContent = '비즈니스석 검색';
+        setStatus(`${job.message} (${job.completed}/${job.total})`, 'error');
+        renderHits(job);
+        updateEstimate();
+        return;
+      }
       let detail = `${job.completed}/${job.total} · ${percent}%`;
       if (live && job.completed > 0) {
         const perLeg = (Date.now() - startedAt) / job.completed;

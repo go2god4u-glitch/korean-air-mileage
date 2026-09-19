@@ -990,6 +990,29 @@ class BusinessScanService:
         self.cancelled = set()
         self.last_asiana_at = None
         self.unsupported_path = self.search.store.directory / "unsupported-routes.json"
+        self.job_path = self.search.store.directory / "business-scan-job.json"
+
+    def read_saved_job(self, job_id):
+        """A scan lives in memory, so a restart loses the thread running it. The
+        last saved snapshot still carries what it had already found."""
+        try:
+            saved = json.loads(self.job_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(saved, dict) or saved.get("id") != job_id:
+            return None
+        job = {key: value for key, value in saved.items() if key != "id"}
+        if job.get("status") in ("queued", "running"):
+            job["status"] = "interrupted"
+            job["message"] = ("조회 프로그램이 다시 시작되어 이번 조회는 중단됐어요. "
+                              "중단 전까지 찾은 결과는 아래에 남아 있어요.")
+        return job
+
+    def save_job(self, job_id, job):
+        try:
+            self.search.store.write_json(self.job_path, dict(job, id=job_id))
+        except OSError:
+            pass
 
     def cancel(self, job_id):
         with self.search.lock:
@@ -1039,13 +1062,20 @@ class BusinessScanService:
 
     def get(self, job_id):
         with self.search.lock:
-            if job_id not in self.jobs:
-                raise AppError("JOB_NOT_FOUND", "조회 기록을 찾지 못했어요.", 404)
-            return dict(self.jobs[job_id])
+            if job_id in self.jobs:
+                return dict(self.jobs[job_id])
+        saved = self.read_saved_job(job_id)
+        if saved is None:
+            raise AppError("JOB_NOT_FOUND", "조회 기록을 찾지 못했어요.", 404)
+        return saved
 
     def update(self, job_id, **fields):
         with self.search.lock:
+            if job_id not in self.jobs:
+                return
             self.jobs[job_id].update(fields)
+            snapshot = dict(self.jobs[job_id])
+        self.save_job(job_id, snapshot)
 
     def _collect_korean_air(self, leg):
         value = self.search.store.read(leg)
