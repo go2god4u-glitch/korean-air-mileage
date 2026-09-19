@@ -1,3 +1,24 @@
 {
-  "watches": []
+  "watches": [
+    {
+      "id": "5e10a4289ad4",
+      "label": "ICN → 미주, 유럽",
+      "origins": [
+        "ICN"
+      ],
+      "destinations": [],
+      "regions": [
+        "미주",
+        "유럽"
+      ],
+      "startDate": "2027-01-01",
+      "endDate": "2027-12-31",
+      "programs": [
+        "korean-air",
+        "asiana-club"
+      ],
+      "enabled": true,
+      "updatedAt": "2026-09-19T04:24:07.412114+00:00"
+    }
+  ]
 }
