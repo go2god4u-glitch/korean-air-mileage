@@ -18,39 +18,21 @@ import { sasRestriction } from '../sas/status.js';
 
 export interface AwardQuery { origin: string; destination: string; date: string; cabin: 'business' | 'first' }
 
-/** The award result page labels every flight's cabin with either its mileage
- *  price or 매진. That is the live answer the public calendar cannot give. */
-const CABIN_LABELS: Record<string, string> = { business: '프레스티지석', first: '일등석' };
+const CABIN_CODES: Record<string, string> = { business: 'C', first: 'F' };
 const SEARCH_URL = 'https://www.koreanair.com/booking/search?bookingType=A&tripType=OW';
-const RESULT_PATH = '/booking/select-award-flight';
 const NO_SEATS = '항공편 운항 스케줄이 없거나 모든 좌석이 매진되었습니다.';
-const CABIN_LABEL_SELECTOR = 'label[for^="flight-bonus"]';
 
-export interface CabinOffer { flightNumber: string; cabin: string; miles: string | null; soldOut: boolean }
-
-export function parseCabinOffers(labels: string[]): CabinOffer[] {
-  const offers: CabinOffer[] = [];
-  for (const raw of labels) {
-    const text = raw.replace(/\s+/gu, ' ').trim();
-    const match = /항공편명\s+(\S+)\s+(일반석|프레스티지석|일등석)\s+(매진|[\d,]+\s*마일)/u.exec(text);
-    if (!match) continue;
-    const [, flightNumber, cabin, value] = match;
-    offers.push({ flightNumber, cabin, soldOut: value === '매진', miles: value === '매진' ? null : value.trim() });
-  }
-  return offers;
-}
-
-async function waitForResult(page: Page, cancelled: () => boolean): Promise<boolean> {
-  const deadline = Date.now() + 90_000;
-  const cabins = page.locator(CABIN_LABEL_SELECTOR);
+async function waitForResult(page: Page, cancelled: () => boolean, origin: string): Promise<boolean> {
+  const deadline = Date.now() + 60_000;
+  const flights = page.locator(`button[aria-label*="출발시간"][aria-label*="출발지 ${origin}"]:visible`);
   while (true) {
     if (cancelled()) throw new Error('CANCELLED');
     if (/\/login/.test(page.url())) throw new Error('LOGIN_REQUIRED');
-    if (page.url().includes(RESULT_PATH) && await cabins.count()) return true;
+    if (await flights.count()) return true;
     if (await page.getByText(NO_SEATS, { exact: true }).isVisible().catch(() => false)) return false;
     if (sasRestriction(await page.locator('body').innerText())) throw new Error('ACCESS_RESTRICTED');
     if (Date.now() > deadline) throw new Error('SEARCH_TIMEOUT');
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(400);
   }
 }
 
@@ -72,7 +54,7 @@ async function chooseDate(page: Page, date: string): Promise<void> {
 export async function searchKoreanAirAward(page: Page, query: AwardQuery, cancelled: () => boolean) {
   const { origin, destination, date, cabin } = query;
   try {
-    if (!CABIN_LABELS[cabin]) throw new Error('INVALID_QUERY');
+    if (!CABIN_CODES[cabin]) throw new Error('INVALID_QUERY');
     if (cancelled()) throw new Error('CANCELLED');
 
     await page.goto(SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
@@ -97,27 +79,32 @@ export async function searchKoreanAirAward(page: Page, query: AwardQuery, cancel
     const confirmDates = page.locator('[id^="dialog-calendar"] kds-button_1:visible').filter({ hasText: /^\s*선택\s*$/ });
     if (await confirmDates.isVisible().catch(() => false)) await confirmDates.click();
 
-    // The award search form has no cabin selector: every cabin comes back priced
-    // or marked 매진 on the result page, which is exactly what we want to read.
+    await page.locator('kds-class_1').click();
+    const radio = page.locator(`input[type="radio"][value="${CABIN_CODES[cabin]}"]`);
+    const radioId = await radio.getAttribute('id');
+    await page.locator(`label[for="${radioId}"]`).click();
+    if (!(await radio.isChecked())) throw new Error('QUERY_MISMATCH');
+    const confirmClass = page.locator('#bookingSeatModal kds-button_1:visible').filter({ hasText: /^\s*선택\s*$/ });
+    if (await confirmClass.isVisible().catch(() => false)) await confirmClass.click();
+    const closeClass = page.getByRole('button', { name: '저장 및 닫기', exact: true });
+    if (await closeClass.isVisible().catch(() => false)) await closeClass.click();
+
     await page.getByText('항공편 검색', { exact: true }).click();
-    const hasFlights = await waitForResult(page, cancelled);
+    const available = await waitForResult(page, cancelled, origin);
 
     // The result must be about the date we asked for, or it tells us nothing.
-    const [, month, day] = date.split('-').map(Number);
-    const shown = (await page.locator('body').innerText()).replace(/\s+/gu, ' ');
-    if (!new RegExp(`0?${month}월\\s*0?${day}일`).test(shown)) throw new Error('QUERY_MISMATCH');
+    const [year, month, day] = date.split('-').map(Number);
+    const shown = await page.locator('body').innerText();
+    if (!new RegExp(`${year}년\\s*0?${month}월\\s*0?${day}일`).test(shown)) throw new Error('QUERY_MISMATCH');
 
-    const offers = hasFlights
-      ? parseCabinOffers(await page.locator(CABIN_LABEL_SELECTOR).evaluateAll((nodes) => nodes.map((n) => n.textContent ?? '')))
+    const flights = available
+      ? await page.locator(`button[aria-label*="출발시간"][aria-label*="출발지 ${origin}"]:visible`)
+          .evaluateAll((nodes) => nodes.map((n) => (n.getAttribute('aria-label') ?? '').split(',')[0].trim()))
       : [];
-    if (hasFlights && !offers.length) throw new Error('STRUCTURE_CHANGED');
-    const wanted = offers.filter((offer) => offer.cabin === CABIN_LABELS[cabin]);
-    const bookable = wanted.filter((offer) => !offer.soldOut);
     return {
       origin, destination, date, cabin,
-      status: bookable.length ? 'available' as const : 'empty' as const,
-      flights: bookable.map((offer) => `${offer.flightNumber} ${offer.miles}`),
-      soldOut: wanted.length > 0 && !bookable.length,
+      status: available ? 'available' as const : 'empty' as const,
+      flights,
       observedAt: new Date().toISOString(),
     };
   } catch (error) {
