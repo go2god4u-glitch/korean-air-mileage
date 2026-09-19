@@ -69,7 +69,10 @@ export async function searchAsiana(page:Page,q:MonthQuery,cancelled:()=>boolean)
           if(f.brdCd!==q.origin||f.ofpCd!==q.destination||!String(f.deptrDt).startsWith(date.replace(/-/g,'')))throw new Error('QUERY_MISMATCH');
           if(f.bkgCd!==code)continue; // P is an upgrade, not a business award.
           if(!/^\d+$/.test(String(f.availQty)))throw new Error('UNRECOGNIZED_RESULT');
-          if(Number(f.availQty)>0)flights.push({cabin,flightNumber:'OZ'+f.fltNbr,departureTime:String(f.deptrDt).slice(8,10)+':'+String(f.deptrDt).slice(10,12),points:null,availableSeatCount:null});
+          // Asiana publishes a per-flight seat count, unlike Korean Air's bare
+          // marker. Keeping it is the difference between "a seat exists" and
+          // "nine seats exist" — it is the airline's own number, not an estimate.
+          if(Number(f.availQty)>0)flights.push({cabin,flightNumber:'OZ'+f.fltNbr,departureTime:String(f.deptrDt).slice(8,10)+':'+String(f.deptrDt).slice(10,12),points:null,availableSeatCount:Number(f.availQty)});
         }
       }
       return {date,status:flights.length?'available':'empty',cabins:[...new Set(flights.map(f=>f.cabin))],flights};

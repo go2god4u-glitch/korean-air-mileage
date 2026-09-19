@@ -352,9 +352,15 @@
           node('span', 'date-number', String(Number(hit.date.slice(8, 10)))),
           node('span', 'date-badge' + (first ? ' first-badge' : ''), first ? '일등석' : '비즈니스'));
         // The live answer overrides the calendar's: it is the one that can be booked.
+        const detail = (hit.liveFlights ?? []).join(' · ');
         if (hit.live === 'available') {
           card.classList.add('live-ok');
-          card.append(node('span', 'date-live ok', '실시간 확인됨'));
+          // The live answer carries the flight and its mileage price; showing them
+          // is the difference between "probably there" and "this one, this price".
+          card.append(node('span', 'date-live ok', detail || '실시간 확인됨'));
+        } else if (!hit.live && detail) {
+          // Asiana gives seat counts on the calendar itself, with no live re-check.
+          card.append(node('span', 'date-live count', detail));
         } else if (hit.live === 'gone') {
           card.classList.add('live-gone');
           card.append(node('span', 'date-live gone', '방금 나갔어요'));

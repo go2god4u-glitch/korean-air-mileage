@@ -1120,9 +1120,18 @@ class BusinessScanService:
                                     else "아시아나에서 접속을 제한했어요.")
                 days = job.get("legs", [{}])[0].get("days", [])
                 # Asiana's public calendar publishes economy and business only.
-                return [{"date": day["date"], "cabins": ["prestige"],
-                         "sourceUpdatedAt": day.get("sourceAt"), "collectedAt": day.get("observedAt")}
-                        for day in days if "business" in (day.get("cabins") or [])]
+                found = []
+                for day in days:
+                    if "business" not in (day.get("cabins") or []):
+                        continue
+                    # Asiana publishes its own per-flight seat count, so the finding
+                    # can say which flight and how many seats rather than just "yes".
+                    seats = [f for f in (day.get("flights") or []) if f.get("cabin") == "business"]
+                    found.append({"date": day["date"], "cabins": ["prestige"],
+                                  "sourceUpdatedAt": day.get("sourceAt"), "collectedAt": day.get("observedAt"),
+                                  "liveFlights": ["%s %s석" % (f["flightNumber"], f["availableSeatCount"])
+                                                  for f in seats if f.get("availableSeatCount")]})
+                return found
         raise AppError("COLLECTION_TIMEOUT", "아시아나 조회가 오래 걸려 중단했어요.")
 
     def _verify_live(self, job_id, hits):
@@ -1229,7 +1238,8 @@ class BusinessScanService:
                                      "month": leg["month"], "date": found["date"],
                                      "cabins": found["cabins"], "foundAt": found_at,
                                      "sourceUpdatedAt": found.get("sourceUpdatedAt"),
-                                     "collectedAt": found.get("collectedAt")})
+                                     "collectedAt": found.get("collectedAt"),
+                                     "liveFlights": found.get("liveFlights")})
                     completed += 1
                     self.update(job_id, completed=completed, hits=list(hits))
             hits = self._verify_live(job_id, hits)
