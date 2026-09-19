@@ -176,7 +176,11 @@
     const combos = picked.origins.length * regionCodes.size * months;
     const requests = combos * Math.max(1, picked.programs.length);
     const note = $('scan-estimate');
-    if (!regionCodes.size) {
+    if (!regionCodes.size && dropped > 0) {
+      // Selected somewhere, but the flight-time filter left nothing to look up.
+      note.textContent = `선택한 지역에 ${minimum}시간 이상 노선이 ${dropped}곳 모두 걸러져 남은 목적지가 없어요. 비행시간 조건을 낮추거나 다른 지역을 골라 주세요.`;
+      note.dataset.kind = 'warn';
+    } else if (!regionCodes.size) {
       note.textContent = '지역을 고르거나 공항 코드를 입력해 주세요.';
       note.dataset.kind = 'info';
     } else {

@@ -10,6 +10,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { collectMonth, CollectionError, validateFutureMonth, SOURCE_URL } from '../src/collector.js';
+import { CalendarParseError } from '../src/parser.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_PATH = resolve(ROOT, 'config/business-watch.json');
@@ -222,7 +223,10 @@ async function main(): Promise<void> {
               }
             }
           } catch (error) {
-            const code = error instanceof CollectionError ? error.code : 'COLLECTION_FAILED';
+            // Parse failures carry their own code; folding them into one generic
+            // code is what made the last sweep's 53 failures undiagnosable.
+            const code = error instanceof CollectionError || error instanceof CalendarParseError
+              ? error.code : 'COLLECTION_FAILED';
             failures.push({ watch: watch.label, destination: destination.code, month, code });
             failed = true;
             if (STOP_CODES.has(code)) { stoppedEarly = true; stopReason = code; break outer; }
