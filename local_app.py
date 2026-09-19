@@ -857,14 +857,8 @@ class BusinessScanService:
         hits, failures, completed = [], [], 0
         total = len(legs) * len(programs)
         try:
-            if "asiana-club" in programs:
-                try:
-                    self.award.open("asiana-club")
-                except SasError:
-                    programs = [p for p in programs if p != "asiana-club"]
-                    failures.append({"program": "asiana-club", "code": "BROWSER_OPEN_FAILED",
-                                      "message": "아시아나 조회용 Chrome을 열지 못해 이 프로그램은 건너뛸게요."})
-                    total = len(legs) * len(programs)
+            # Asiana searches run in their own windowless browser, so no visible
+            # login window is opened here.
             unsupported = self.unsupported_routes()
             skipped = []
             for leg in legs:

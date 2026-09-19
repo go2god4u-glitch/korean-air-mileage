@@ -1,6 +1,6 @@
 import {createInterface} from 'node:readline';
 import {resolve} from 'node:path';
-import type {Page} from 'playwright';
+import {chromium, type Page} from 'playwright';
 import {openNativeChrome} from '../src/sas/native-chrome.js';
 import {sasRestriction} from '../src/sas/status.js';
 import {searchSky} from '../src/partners/skyteam.js';
@@ -9,6 +9,18 @@ import {searchPartnerMonth} from '../src/partners/month.js';
 import {searchAsiana} from '../src/partners/asiana.js';
 const urls:Record<string,string>={'korean-air':'https://www.koreanair.com/booking/search?bookingType=A&tripType=OW','asiana-club':'https://flyasiana.com/I/KR/KO/MileageSeatSearch.do','star-alliance':'https://flyasiana.com/C/KR/KO/index','skyteam':'https://www.koreanair.com/booking/search?bookingType=S&tripType=RT'};
 let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=new Map<string,Page>();let busy=false,generation=0;let monthProgram:string|null=null;let monthTask:ReturnType<typeof searchPartnerMonth>|null=null;
+// Asiana's public calendar needs no login, and the site accepts headless Chrome as
+// long as the headless user agent is replaced. It therefore gets its own windowless
+// browser instead of the shared, visible login profile the other programs need.
+let headless:{browser:import('playwright').Browser,page:Page}|null=null;
+const HEADLESS_USER_AGENT='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
+async function headlessPage(){
+  if(headless&&!headless.page.isClosed())return headless.page;
+  const browser=await chromium.launch({channel:'chrome',headless:true});
+  const context=await browser.newContext({locale:'ko-KR',timezoneId:'Asia/Seoul',userAgent:HEADLESS_USER_AGENT});
+  headless={browser,page:await context.newPage()};
+  return headless.page;
+}
 async function ensure(program:string,navigate=true){
   if(!native){native=await openNativeChrome(resolve('data/partner-chrome-profile'),{keepRunning:true});native.context.on('close',()=>{native=null;pages.clear();generation++;});}
   let p=pages.get(program);if(!p||p.isClosed()){p=await native.context.newPage();pages.set(program,p);if(navigate)await p.goto(urls[program],{waitUntil:'domcontentloaded',timeout:45000});}return p;
@@ -27,7 +39,9 @@ async function run(c:any){
       return await monthTask;
     }finally{busy=false;monthProgram=null;monthTask=null;}
   }
-  try{const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login');if(c.action==='confirm-login'){if((await state(c.program)).state==='restricted')return {state:'restricted'};await p.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});for(let i=0;i<20;i++){const result=await state(c.program);if(result.state!=='ready'||result.authenticated||c.program==='asiana-club')return result;await p.waitForTimeout(300);}return state(c.program);}if(c.action==='open'){await p.bringToFront();return state(c.program);}if((await state(c.program)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
+  try{
+    if(c.action==='search'&&c.program==='asiana-club')return await searchAsiana(await headlessPage(),c.query,()=>generation!==initial);
+    const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login');if(c.action==='confirm-login'){if((await state(c.program)).state==='restricted')return {state:'restricted'};await p.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});for(let i=0;i<20;i++){const result=await state(c.program);if(result.state!=='ready'||result.authenticated||c.program==='asiana-club')return result;await p.waitForTimeout(300);}return state(c.program);}if(c.action==='open'){await p.bringToFront();return state(c.program);}if((await state(c.program)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
     if(c.program==='asiana-club')return await searchAsiana(p,c.query,()=>generation!==initial);
     if(c.program==='skyteam')return await searchSky(p,c.query,()=>generation!==initial);
     if(c.program==='star-alliance')return await searchStar(p,c.query,()=>generation!==initial);

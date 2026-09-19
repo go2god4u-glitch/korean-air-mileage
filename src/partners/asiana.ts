@@ -8,11 +8,17 @@ export async function searchAsiana(page:Page,q:MonthQuery,cancelled:()=>boolean)
     await page.getByRole('link',{name:'편도',exact:true}).click();
     await page.locator('#txtDepartureAirport1.ui-autocomplete-input').waitFor();
     await page.locator('#txtDepartureAirport1').fill('');await page.locator('#txtDepartureAirport1').pressSequentially(q.origin);
-    await page.locator('#divDepAirportAC1 li').filter({hasText:q.origin}).click();
+    const departure=page.locator('#divDepAirportAC1 li').filter({hasText:q.origin});
+    try {await departure.first().waitFor({timeout:8000});} catch {throw new Error('ROUTE_UNAVAILABLE');}
+    await departure.click();
     // Destination autocomplete is installed asynchronously after an origin is committed.
     await page.locator('#txtArrivalAirport1.ui-autocomplete-input').waitFor();
     await page.locator('#txtArrivalAirport1').fill('');await page.locator('#txtArrivalAirport1').pressSequentially(q.destination);
-    await page.locator('#divArrAirportAC1 li').filter({hasText:q.destination}).click();
+    // An airport Asiana does not serve from this origin never reaches the suggestion
+    // list. Say so explicitly instead of timing out on a click that can never happen.
+    const arrival=page.locator('#divArrAirportAC1 li').filter({hasText:q.destination});
+    try {await arrival.first().waitFor({timeout:8000});} catch {throw new Error('ROUTE_UNAVAILABLE');}
+    await arrival.click();
     if(await page.locator('#departureAirport1').inputValue()!==q.origin||await page.locator('#arrivalAirport1').inputValue()!==q.destination)throw new Error('QUERY_MISMATCH');
     await page.locator('#sCalendarMonth').click();
     const [year,month]=q.month.split('-');
