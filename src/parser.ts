@@ -113,19 +113,25 @@ export function parseCalendarHtml(html: string, options: ParseCalendarOptions): 
       throw new CalendarParseError('STRUCTURE_CHANGED', `Day ${day} has multiple marker containers.`);
     }
     // Exact no-seat day-cell structure observed in ICN→CDG November 2026.
-    // Empty cells and the separately listed no-flight legend remain unsupported.
     const noSeat = cell.find('.bonus-calendar__day > span.ux-class-icon.-no-seat.-gray');
     const verifiedNoSeat = noSeat.length === 1 && normalize(noSeat.text()) === '좌석 없음';
     if (noSeat.length > 0 && (!verifiedNoSeat || markerElements.length > 0)) {
       throw new CalendarParseError('STRUCTURE_CHANGED', `Day ${day} has inconsistent no-seat and availability markers.`);
     }
-    if (markerElements.length === 0 && !verifiedNoSeat) {
+    // A day the route simply does not fly, observed in ICN→CDG December 2026. It is
+    // a known state, not an unreadable one, and it never means a seat was missed.
+    const noFlight = cell.find('.bonus-calendar__day > span.ux-class-icon.-no-flight.-gray');
+    const verifiedNoFlight = noFlight.length === 1 && normalize(noFlight.text()) === '운항편 없음';
+    if (noFlight.length > 0 && (!verifiedNoFlight || markerElements.length > 0 || verifiedNoSeat)) {
+      throw new CalendarParseError('STRUCTURE_CHANGED', `Day ${day} has inconsistent no-flight and availability markers.`);
+    }
+    if (markerElements.length === 0 && !verifiedNoSeat && !verifiedNoFlight) {
       throw new CalendarParseError('EMPTY_UNVERIFIED_STATE', `Day ${day} has no verified availability markers; unavailable-day DOM has not been observed.`);
     }
 
     const date: AwardDate = {
       date: `${options.month}-${String(day).padStart(2, '0')}`,
-      operatingStatus: 'OPERATED',
+      operatingStatus: verifiedNoFlight ? 'NOT_OPERATED' : 'OPERATED',
       availabilityType: 'PUBLIC_INDICATOR',
       availableSeatCount: null,
       economyAward: false,

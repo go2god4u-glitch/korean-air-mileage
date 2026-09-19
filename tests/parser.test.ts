@@ -202,6 +202,28 @@ describe('synthetic structural and marker defenses', () => {
     expect(dates[1]?.economyAward).toBe(true);
   });
 
+  const cdgOptions = { ...options, destination: 'CDG', month: '2026-11' };
+  const cdgCellWithMarkers = () => {
+    const $ = load(cdgFixture);
+    const cell = $('td[id^="day_"]').filter((_, element) => $(element).find('.bonus-calendar__icons li').length > 0).first();
+    return { $, cell, day: Number(cell.attr('id')!.replace('day_', '')) };
+  };
+
+  it('reads an observed no-flight day as not operated rather than unreadable', () => {
+    const { $, cell, day } = cdgCellWithMarkers();
+    cell.find('.bonus-calendar__icons').remove();
+    cell.find('.bonus-calendar__day').append('<span class="ux-class-icon -no-flight -gray">&nbsp;운항편 없음 </span>');
+    const { dates } = parseCalendarHtml($.html(), cdgOptions);
+    expect(dates.find((date) => date.date.endsWith(String(day).padStart(2, '0'))))
+      .toMatchObject({ operatingStatus: 'NOT_OPERATED', economyAward: false, prestigeAward: false });
+  });
+
+  it('rejects a no-flight day that also claims available seats', () => {
+    const { $, cell } = cdgCellWithMarkers();
+    cell.find('.bonus-calendar__day').append('<span class="ux-class-icon -no-flight -gray">&nbsp;운항편 없음 </span>');
+    expectFailure($.html(), 'STRUCTURE_CHANGED', cdgOptions);
+  });
+
   it('rejects conflicting no-seat and positive availability markers', () => {
     const $ = load(cdgFixture);
     const cell = $('.bonus-calendar__day > span.ux-class-icon.-no-seat.-gray').first().closest('td');
