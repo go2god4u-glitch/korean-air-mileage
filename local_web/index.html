@@ -50,10 +50,11 @@
           <h2 style="margin:0 0 6px;font-size:20px;letter-spacing:-.5px">비즈니스 이상 등급으로 떠날 수 있는 날</h2>
           <p class="program-hint" style="margin:0 0 20px">노선을 미리 정하지 않고, 고른 지역 전체에서 비즈니스 보너스 좌석이 열린 날짜를 한 번에 찾아요. 대한항공은 공개 달력을, 아시아나는 조회용 Chrome의 공개 달력을 사용해요.</p>
           <form id="scan-form">
-            <div class="scan-block"><span class="field-label">출발 공항</span><div class="scan-checks" id="scan-origins"></div><p class="program-hint" style="margin:6px 0 0">아무것도 고르지 않으면 인천(ICN)으로 찾아요.</p></div>
-            <div class="scan-block"><span class="field-label">가고 싶은 지역</span><div class="scan-checks" id="scan-regions"></div></div>
+            <div class="scan-block"><span class="field-label">여정 방향</span><div class="scan-checks" id="scan-direction"><label class="scan-check"><input type="radio" name="scanDirection" value="outbound" checked><span>출국 · 한국 → 해외</span></label><label class="scan-check"><input type="radio" name="scanDirection" value="inbound"><span>귀국 · 해외 → 인천</span></label></div></div>
+            <div class="scan-block" id="scan-origin-block"><span class="field-label">출발 공항</span><div class="scan-checks" id="scan-origins"></div><p class="program-hint" style="margin:6px 0 0">아무것도 고르지 않으면 인천(ICN)으로 찾아요.</p></div>
+            <div class="scan-block"><span class="field-label" id="scan-region-label">가고 싶은 지역</span><div class="scan-checks" id="scan-regions"></div></div>
             <div class="scan-block"><label class="field-label" for="scan-min-hours">비행시간</label><select id="scan-min-hours" class="scan-date" style="margin-top:8px;max-width:340px;width:100%"><option value="0">전체 (짧은 노선 포함)</option><option value="6" selected>6시간 이상 — 비즈니스가 의미 있어지는 구간</option><option value="8">8시간 이상 — 장거리</option><option value="10">10시간 이상 — 최장거리, 좌석이 가장 좋은 기종</option></select><p class="program-hint" style="margin:6px 0 0" id="scan-hours-note"></p></div>
-            <div class="scan-block"><label class="field-label" for="scan-extra-destinations">특정 공항 추가 (선택)</label><input id="scan-extra-destinations" class="scan-input" placeholder="예: CDG LHR JFK" autocomplete="off" spellcheck="false"></div>
+            <div class="scan-block"><label class="field-label" for="scan-extra-destinations" id="scan-extra-label">특정 공항 추가 (선택)</label><input id="scan-extra-destinations" class="scan-input" placeholder="예: CDG LHR JFK" autocomplete="off" spellcheck="false"></div>
             <div class="scan-block scan-row">
               <label class="field"><span class="field-label">시작 달</span><select id="scan-start-month"></select></label>
               <label class="field"><span class="field-label">끝 달</span><select id="scan-end-month"></select></label>
@@ -373,7 +374,8 @@
       count.append(node('div','count-label',!leg.calendar ? '좌석 현황 미확인' : !countKnown ? '여행 기간 적용 전' : inbound && outboundDate ? '여행 기간에 맞는 날짜' : '좌석 표시가 있는 날짜'));
       header.append(detail,count); section.append(header);
       if(leg.calendar) {
-        section.append(node('p','coverage-note','이달의 ' + leg.calendar.dates.length + '일 전체 현황 확인 · ' + cabinNames[currentParams.cabin] + ' 보너스 표시 ' + all.length + '일'));
+        const pending = leg.calendar.dates.filter(day => day.availabilityType === 'NOT_YET_OPEN').length;
+        section.append(node('p','coverage-note','이달의 ' + (leg.calendar.dates.length - pending) + '일 현황 확인 · ' + cabinNames[currentParams.cabin] + ' 보너스 표시 ' + all.length + '일' + (pending ? ' · 아직 예약이 열리지 않은 ' + pending + '일은 좌석 유무를 알 수 없어요' : '')));
         if(resultFailed) section.append(node('p','coverage-note result-warning','이번 조회는 완료하지 못했어요. 이 구간에서 마지막으로 확인한 결과를 보여드려요.'));
       }
       if(!leg.calendar) section.append(placeholder(resultFailed ? '좌석 현황을 확인하지 못했어요.' : '저장된 조회 결과가 없어요.',resultFailed ? '조회가 완료되지 않아 이 구간의 좌석 유무를 알 수 없어요. 위의 오류 안내를 확인해 주세요.' : '아직 좌석 유무를 확인하지 않았어요. 위의 조회 버튼을 눌러 주세요.'));
@@ -383,7 +385,7 @@
         const title = canChooseOutbound ? '가는 날을 먼저 골라 주세요.' : outbound?.calendar ? '가는 편에 선택할 수 있는 날짜가 없어요.' : '가는 편의 현황을 먼저 확인해 주세요.';
         section.append(placeholder(title, '오는 편의 보너스 좌석 표시가 있는 날짜는 ' + all.length + '일이에요. ' + (canChooseOutbound ? '가는 날을 고르면 여행 기간에 맞는 오는 날을 보여드려요.' : outbound?.calendar ? '가는 편의 노선·월·좌석 등급을 바꿔서 확인해 주세요.' : '가는 편의 조회를 완료한 뒤 오는 날을 선택할 수 있어요.')));
       }
-      else if(filtered.length === 0) section.append(placeholder(inbound && all.length ? '여행 기간에 맞는 오는 날이 없어요.' : '공개 현황에 ' + (currentParams.cabin === 'all' ? '조회 가능한 등급의' : cabinNames[currentParams.cabin]) + ' 보너스 좌석 표시가 없어요.',inbound && all.length ? '오는 편의 보너스 표시는 ' + all.length + '일에 있지만, 선택한 가는 날과 여행 기간에는 맞지 않아요. 가는 날이나 여행 기간을 바꿔 주세요.' : '이달의 ' + leg.calendar.dates.length + '일 전체를 확인한 결과예요. 실시간 매진을 뜻하지는 않아요. 현재 예약 가능한 좌석은 대한항공 예매 화면에서 확인해 주세요.'));
+      else if(filtered.length === 0) section.append(placeholder(inbound && all.length ? '여행 기간에 맞는 오는 날이 없어요.' : '공개 현황에 ' + (currentParams.cabin === 'all' ? '조회 가능한 등급의' : cabinNames[currentParams.cabin]) + ' 보너스 좌석 표시가 없어요.',inbound && all.length ? '오는 편의 보너스 표시는 ' + all.length + '일에 있지만, 선택한 가는 날과 여행 기간에는 맞지 않아요. 가는 날이나 여행 기간을 바꿔 주세요.' : '이달의 공개된 날짜를 확인한 결과예요. 실시간 매진을 뜻하지는 않아요. 아직 예약이 열리지 않은 날짜는 확인할 수 없어요. 현재 예약 가능한 좌석은 대한항공 예매 화면에서 확인해 주세요.'));
       else {
         if(inbound) section.append(node('p','selection-note',prettyDate(outboundDate) + ' 출발 · 두 편의 출발일 간격이 ' + stayDays() + '일 이상인 날짜만 보여드려요.'));
         const grid = node('div','date-grid');

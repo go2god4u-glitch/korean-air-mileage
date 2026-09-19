@@ -181,12 +181,11 @@ def read_route_catalog(root=ROOT):
 
 
 def month_bounds(today=None):
+    """A month is offered once its first day is bookable. Days past the horizon
+    inside it come back as NOT_YET_OPEN rather than as no seats."""
     today = today or datetime.now(SEOUL).date()
     minimum = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
-    limit = today + timedelta(days=359)
-    maximum = limit.replace(day=1)
-    if calendar.monthrange(limit.year, limit.month)[1] != limit.day:
-        maximum = (maximum - timedelta(days=1)).replace(day=1)
+    maximum = (today + timedelta(days=359)).replace(day=1)
     return minimum.strftime("%Y-%m"), maximum.strftime("%Y-%m")
 
 
@@ -511,9 +510,13 @@ def validate_calendar(value, leg):
         if not isinstance(row, dict) or row.get("date") not in expected or row["date"] in seen:
             raise ValueError("invalid or duplicate day")
         seen.add(row["date"])
-        if any(type(row.get(cabin + "Award")) is not bool for cabin in CABINS):
+        # A day past the booking horizon publishes nothing, so its markers are
+        # null. Only that state may carry nulls; anything else must be explicit.
+        not_yet_open = row.get("availabilityType") == "NOT_YET_OPEN"
+        allowed = (bool, type(None)) if not_yet_open else (bool,)
+        if any(not isinstance(row.get(cabin + "Award"), allowed) for cabin in CABINS):
             raise ValueError("unverified award marker")
-        if row.get("availabilityType") != "PUBLIC_INDICATOR" or row.get("availableSeatCount") is not None:
+        if row.get("availabilityType") not in ("PUBLIC_INDICATOR", "NOT_YET_OPEN") or row.get("availableSeatCount") is not None:
             raise ValueError("unverified seat quantity")
     return value
 

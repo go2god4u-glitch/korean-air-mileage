@@ -111,7 +111,7 @@ class RequestValidationTests(unittest.TestCase):
             (dict(PARAMS, cabin="first"), "INVALID_CABIN"),
             (dict(PARAMS, month="2026-13"), "INVALID_MONTH"),
             (dict(PARAMS, month="2026-09"), "MONTH_OUT_OF_RANGE"),
-            (dict(PARAMS, month="2027-09"), "MONTH_OUT_OF_RANGE"),
+            (dict(PARAMS, month="2027-10"), "MONTH_OUT_OF_RANGE"),
             (dict(PARAMS, tripType="ROUND_TRIP"), "INVALID_MONTH"),
             (dict(round_trip(), returnMonth="2026-10"), "INVALID_RETURN_MONTH"),
         ]
@@ -121,13 +121,14 @@ class RequestValidationTests(unittest.TestCase):
                     app.validate_request(raw, TODAY)
                 self.assertEqual(raised.exception.code, code)
 
-    def test_month_bounds_only_include_complete_future_months(self):
+    def test_month_bounds_include_every_month_that_starts_in_the_booking_window(self):
         minimum, maximum = app.month_bounds(TODAY)
-        self.assertEqual((minimum, maximum), ("2026-10", "2027-08"))
+        self.assertEqual((minimum, maximum), ("2026-10", "2027-09"))
         limit = TODAY + timedelta(days=359)
         last_year, last_month = map(int, maximum.split("-"))
-        self.assertLessEqual(date(last_year, last_month,
-                                  calendar.monthrange(last_year, last_month)[1]), limit)
+        # The month may run past the horizon; only its first day must be bookable.
+        self.assertLessEqual(date(last_year, last_month, 1), limit)
+        self.assertGreater(date(last_year, last_month, 1) + timedelta(days=31), limit)
         self.assertEqual(app.month_bounds(date(2026, 12, 31))[0], "2027-01")
 
     def test_round_trip_reverses_airports_and_uses_return_month(self):

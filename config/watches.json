@@ -1,15 +1,3 @@
 {
-  "watches": [
-    {
-      "id": "aaaaaaaaaaaa",
-      "label": "아시아나 검증용",
-      "origins": ["ICN"],
-      "destinations": ["NRT"],
-      "regions": [],
-      "startDate": "2026-11-01",
-      "endDate": "2026-11-30",
-      "programs": ["asiana-club"],
-      "enabled": true
-    }
-  ]
+  "watches": []
 }

@@ -284,6 +284,12 @@ async function main(): Promise<void> {
     const { watch } = plan;
     const previousKeys = new Set(previous.filter((h) => h.watchId === watch.id).map(hitKey));
     for (const program of watch.programs) {
+      // Asiana serves an Access Denied page to datacenter IPs, verified from this
+      // workflow, so a scheduled run skips it rather than reporting a false miss.
+      if (program === 'asiana-club' && process.env.CI) {
+        console.log('[business-scan] skipping asiana-club: blocked from CI networks; search it from the local app.');
+        continue;
+      }
      for (const origin of watch.origins) {
       for (const destination of plan.destinations) {
         if (destination.code === origin) continue;

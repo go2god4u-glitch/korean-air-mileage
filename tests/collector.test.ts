@@ -14,11 +14,13 @@ describe('bounded public collection input', () => {
     },
   );
 
-  it('rejects partial current and too-distant months', () => {
+  it('rejects the current month and months starting past the booking horizon', () => {
     const now = new Date('2026-09-07T03:00:00Z');
     expect(() => validateFutureMonth('2026-09', now)).toThrow(CollectionError);
-    expect(() => validateFutureMonth('2027-09', now)).toThrow(CollectionError);
+    expect(() => validateFutureMonth('2027-10', now)).toThrow(CollectionError);
     expect(() => validateFutureMonth('2026-11', now)).not.toThrow();
+    // The airline opens this month even though its later days are not bookable yet.
+    expect(() => validateFutureMonth('2027-09', now)).not.toThrow();
   });
 });
 

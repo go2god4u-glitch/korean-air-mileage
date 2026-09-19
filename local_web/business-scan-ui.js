@@ -128,26 +128,38 @@
     $('scan-end-month').value = config.minMonth;
   }
 
-  /** Regions are expanded here so the duration filter can drop short hops before
-   *  the server ever looks them up. */
-  function selection() {
-    const origins = checkedValues('scan-origins');
+  function direction() {
+    return document.querySelector('input[name="scanDirection"]:checked')?.value ?? 'outbound';
+  }
+
+  /** The overseas side of the trip — chosen by region either way. Coming home it
+   *  is the departure airport; going out it is the destination. */
+  function overseasCodes() {
     const regions = checkedValues('scan-regions');
     const extra = $('scan-extra-destinations').value.trim().toUpperCase();
     const typed = extra ? extra.split(/[^A-Z]+/).filter((code) => /^[A-Z]{3}$/.test(code)) : [];
-    const minimum = Number($('scan-min-hours').value) || 0;
     const picked = new Set(typed);
     for (const airport of catalog?.list ?? []) if (regions.includes(airport.region)) picked.add(airport.code);
-    const chosen = origins.length ? origins : ['ICN'];
-    for (const origin of chosen) picked.delete(origin);
-    return {
-      origins: chosen,
+    const minimum = Number($('scan-min-hours').value) || 0;
+    return [...picked].filter((code) => meetsDuration(code, minimum));
+  }
+
+  /** Regions are expanded here so the duration filter can drop short hops before
+   *  the server ever looks them up. */
+  function selection() {
+    const overseas = overseasCodes();
+    const shared = {
       regions: [],
-      destinations: [...picked].filter((code) => meetsDuration(code, minimum)),
       programs: checkedValues('scan-programs'),
       startMonth: $('scan-start-month').value,
       endMonth: $('scan-end-month').value,
     };
+    if (direction() === 'inbound') {
+      return { ...shared, origins: overseas.filter((code) => code !== 'ICN'), destinations: ['ICN'] };
+    }
+    const home = checkedValues('scan-origins');
+    const chosen = home.length ? home : ['ICN'];
+    return { ...shared, origins: chosen, destinations: overseas.filter((code) => !chosen.includes(code)) };
   }
 
   function monthCount(startMonth, endMonth) {
@@ -156,16 +168,25 @@
     return (endYear * 12 + endNumber) - (startYear * 12 + startNumber) + 1;
   }
 
+  function applyDirection() {
+    const inbound = direction() === 'inbound';
+    $('scan-origin-block').hidden = inbound;
+    $('scan-region-label').textContent = inbound ? '어느 지역에서 돌아올까요' : '가고 싶은 지역';
+    $('scan-extra-label').textContent = inbound ? '특정 출발 공항 추가 (선택)' : '특정 공항 추가 (선택)';
+  }
+
   function updateEstimate() {
     if (!catalog || !config) return;
+    applyDirection();
     const picked = selection();
-    const regionCodes = new Set(picked.destinations);
+    const inbound = direction() === 'inbound';
+    const regionCodes = new Set(inbound ? picked.origins : picked.destinations);
     const minimum = Number($('scan-min-hours').value) || 0;
     const dropped = (() => {
       let count = 0;
       const regions = checkedValues('scan-regions');
       for (const airport of catalog.list) {
-        if (regions.includes(airport.region) && !picked.origins.includes(airport.code) && !meetsDuration(airport.code, minimum)) count++;
+        if (regions.includes(airport.region) && airport.code !== 'ICN' && !meetsDuration(airport.code, minimum)) count++;
       }
       return count;
     })();
@@ -173,12 +194,12 @@
       ? `${minimum}시간 미만 노선 ${dropped}곳은 제외했어요. 비행시간을 모르는 공항은 남겨둬요.`
       : '비행시간에 관계없이 모두 조회해요.';
     const months = Math.max(0, monthCount(picked.startMonth, picked.endMonth));
-    const combos = picked.origins.length * regionCodes.size * months;
+    const combos = picked.origins.length * picked.destinations.length * months;
     const requests = combos * Math.max(1, picked.programs.length);
     const note = $('scan-estimate');
     if (!regionCodes.size && dropped > 0) {
       // Selected somewhere, but the flight-time filter left nothing to look up.
-      note.textContent = `선택한 지역에 ${minimum}시간 이상 노선이 ${dropped}곳 모두 걸러져 남은 목적지가 없어요. 비행시간 조건을 낮추거나 다른 지역을 골라 주세요.`;
+      note.textContent = `선택한 지역에 ${minimum}시간 이상 노선이 ${dropped}곳 모두 걸러져 남은 ${inbound ? '출발지' : '목적지'}가 없어요. 비행시간 조건을 낮추거나 다른 지역을 골라 주세요.`;
       note.dataset.kind = 'warn';
     } else if (!regionCodes.size) {
       note.textContent = '지역을 고르거나 공항 코드를 입력해 주세요.';
@@ -186,7 +207,7 @@
     } else {
       const minutes = Math.ceil((requests * 15) / 60);
       const duration = minutes >= 60 ? `${Math.floor(minutes / 60)}시간 ${minutes % 60}분` : `${minutes}분`;
-      note.textContent = `목적지 ${regionCodes.size}곳 × ${months}개월 = 조합 ${combos}건 · 요청 ${requests}회 · 예상 ${duration}쯤 걸려요. 한 번에 한 건씩 조회하고, 찾는 대로 아래에 바로 보여드려요. 중간에 멈출 수 있어요.`;
+      note.textContent = `${inbound ? '출발지' : '목적지'} ${regionCodes.size}곳 × ${months}개월 = 조합 ${combos}건 · 요청 ${requests}회 · 예상 ${duration}쯤 걸려요. 한 번에 한 건씩 조회하고, 찾는 대로 아래에 바로 보여드려요. 중간에 멈출 수 있어요.`;
       note.dataset.kind = minutes > 90 ? 'warn' : 'info';
     }
     $('scan-button').disabled = running || !regionCodes.size || !picked.programs.length;
@@ -355,6 +376,7 @@
     $('scan-end-month').addEventListener('change', updateEstimate);
     $('scan-extra-destinations').addEventListener('input', updateEstimate);
     $('scan-min-hours').addEventListener('change', updateEstimate);
+    for (const input of $('scan-direction').querySelectorAll('input')) input.addEventListener('change', updateEstimate);
     for (const input of $('scan-programs').querySelectorAll('input')) input.addEventListener('change', updateEstimate);
     try {
       const [routes, appConfig, hours] = await Promise.all([

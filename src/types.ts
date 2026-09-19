@@ -2,11 +2,13 @@
 export interface AwardDate {
   date: string;
   operatingStatus: 'OPERATED' | 'NOT_OPERATED';
-  availabilityType: 'PUBLIC_INDICATOR';
+  /** NOT_YET_OPEN marks a day past the airline's booking horizon: the calendar
+   *  shows it but publishes nothing, so its award fields are null, not false. */
+  availabilityType: 'PUBLIC_INDICATOR' | 'NOT_YET_OPEN';
   availableSeatCount: null;
-  economyAward: boolean;
-  premiumAward: boolean;
-  prestigeAward: boolean;
+  economyAward: boolean | null;
+  premiumAward: boolean | null;
+  prestigeAward: boolean | null;
   /** Null when the public marker combines first-class awards and upgrades. */
   firstAward: boolean | null;
   firstAwardOrUpgrade: boolean;

@@ -43,13 +43,11 @@ export function validateFutureMonth(month: string, now = new Date()): void {
     timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(now);
   const start = Date.parse(`${month}-01T00:00:00+09:00`);
-  const [year, number] = month.split('-').map(Number);
-  const lastDay = new Date(Date.UTC(year, number, 0)).getUTCDate();
-  const end = Date.parse(`${month}-${lastDay}T00:00:00+09:00`);
   const currentDay = Date.parse(`${today}T00:00:00+09:00`);
-  // This first collector intentionally handles complete future months only.
-  if (start <= currentDay || end > currentDay + 359 * 86_400_000) {
-    throw new CollectionError('MONTH_OUT_OF_RANGE', '향후 360일 안에 전체 날짜가 포함되는 미래 한 달을 선택하세요.');
+  // A month qualifies once its first day is bookable. Later days in it may still
+  // be past the horizon; those are recorded as NOT_YET_OPEN, never as no seats.
+  if (start <= currentDay || start > currentDay + 359 * 86_400_000) {
+    throw new CollectionError('MONTH_OUT_OF_RANGE', '향후 360일 안에 시작하는 미래 한 달을 선택하세요.');
   }
 }
 

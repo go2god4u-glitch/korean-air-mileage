@@ -29,7 +29,7 @@ describe('the selected itinerary crossing the localhost bridge', () => {
     { outboundDate: '2026-12-05' },
     { month: '2027-02', outboundDate: '2027-02-29' },
     { month: '2026-09', outboundDate: '2026-09-08' },
-    { month: '2027-09', outboundDate: '2027-09-01' },
+    { month: '2027-10', outboundDate: '2027-10-01' },
     { destination: 'ICN' },
     { destination: 'SIN.*' },
     { cabin: 'prestigeUpgrade' },

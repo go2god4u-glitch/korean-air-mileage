@@ -125,18 +125,24 @@ export function parseCalendarHtml(html: string, options: ParseCalendarOptions): 
     if (noFlight.length > 0 && (!verifiedNoFlight || markerElements.length > 0 || verifiedNoSeat)) {
       throw new CalendarParseError('STRUCTURE_CHANGED', `Day ${day} has inconsistent no-flight and availability markers.`);
     }
-    if (markerElements.length === 0 && !verifiedNoSeat && !verifiedNoFlight) {
+    // Past the airline's booking horizon the cell is rendered but deliberately
+    // empty and marked unselectable. Publishing nothing is not the same as
+    // publishing "no seats", so these days are recorded as unknown.
+    const notYetOpen = cell.hasClass('-disabled') && cell.attr('aria-disabled') === 'true'
+      && /선택 불가능/u.test(normalize(cell.find('.bonus-calendar__day > span._hidden').text()))
+      && markerElements.length === 0 && !verifiedNoSeat && !verifiedNoFlight;
+    if (markerElements.length === 0 && !verifiedNoSeat && !verifiedNoFlight && !notYetOpen) {
       throw new CalendarParseError('EMPTY_UNVERIFIED_STATE', `Day ${day} has no verified availability markers; unavailable-day DOM has not been observed.`);
     }
 
     const date: AwardDate = {
       date: `${options.month}-${String(day).padStart(2, '0')}`,
       operatingStatus: verifiedNoFlight ? 'NOT_OPERATED' : 'OPERATED',
-      availabilityType: 'PUBLIC_INDICATOR',
+      availabilityType: notYetOpen ? 'NOT_YET_OPEN' : 'PUBLIC_INDICATOR',
       availableSeatCount: null,
-      economyAward: false,
-      premiumAward: false,
-      prestigeAward: false,
+      economyAward: notYetOpen ? null : false,
+      premiumAward: notYetOpen ? null : false,
+      prestigeAward: notYetOpen ? null : false,
       firstAward: false,
       firstAwardOrUpgrade: false,
       economyUpgrade: false,
