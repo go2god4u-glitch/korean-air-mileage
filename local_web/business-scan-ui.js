@@ -9,7 +9,7 @@
     return element;
   };
   const programNames = { 'korean-air': '대한항공', 'asiana-club': '아시아나' };
-  let catalog = null, config = null, polling = null, running = false, currentJobId = null, startedAt = 0;
+  let catalog = null, config = null, polling = null, running = false, currentJobId = null, startedAt = 0, pollFailures = 0;
   let flightHours = {};
 
   function hoursFor(code) {
@@ -255,7 +255,7 @@
       detail.append(route, node('div', 'route-details',
         `${airportName(overseas)} · ${first ? '일등석 보너스 또는 좌석승급' : '비즈니스 보너스 좌석'}${hours ? ` · 약 ${hours}시간` : ''}`));
       const count = node('div', 'result-count');
-      count.append(node('strong', null, String(routeHits.length)), node('span', null, '일'),
+      count.append(node('strong', null, String(routeHits.length)), node('span', null, '개'),
         node('div', 'count-label', '좌석 표시가 있는 날짜'));
       top.append(detail, count);
       panel.append(top);
@@ -281,6 +281,7 @@
   async function poll(jobId) {
     try {
       const job = await api(`/api/business-scan/jobs/${jobId}`);
+      pollFailures = 0;
       const percent = job.total ? Math.round((job.completed / job.total) * 100) : 0;
       const live = job.status === 'running' || job.status === 'queued';
       let detail = `${job.completed}/${job.total} · ${percent}%`;
@@ -315,13 +316,20 @@
       $('scan-failures').textContent = notes.join(' · ');
       updateEstimate();
     } catch (error) {
+      // The search itself keeps running in the background, so a dropped poll —
+      // a restarted server, a moment of load — must not throw the run away.
+      pollFailures += 1;
+      if (pollFailures < 8) {
+        setStatus(`조회 상태를 확인하지 못했어요. 다시 시도하고 있어요… (${pollFailures}/8)`, 'busy');
+        return;
+      }
       clearInterval(polling);
       polling = null;
       running = false;
       currentJobId = null;
       $('scan-cancel').hidden = true;
       $('scan-button').textContent = '비즈니스석 검색';
-      setStatus(error.message, 'error');
+      setStatus(`${error.message} 조회는 계속되고 있을 수 있어요. 검색을 다시 누르면 현재 상태를 확인해요.`, 'error');
       updateEstimate();
     }
   }
@@ -345,6 +353,7 @@
     try {
       running = true;
       startedAt = Date.now();
+      pollFailures = 0;
       $('scan-button').disabled = true;
       $('scan-button').textContent = '조회 중이에요…';
       $('scan-failures').textContent = '';

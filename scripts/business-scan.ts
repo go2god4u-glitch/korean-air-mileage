@@ -180,7 +180,7 @@ function hitBlocks(hits: Hit[]): string[] {
       }
       const lines = [...byMonth.entries()].map(([month, days]) =>
         `  ${Number(month.slice(5, 7))}월: ${days.join(', ')}일`);
-      return `✈️ ${route} — ${routeHits.length}일\n${lines.join('\n')}`;
+      return `✈️ ${route} — ${routeHits.length}개\n${lines.join('\n')}`;
     });
 }
 
