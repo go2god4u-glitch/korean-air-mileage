@@ -1,14 +1,4 @@
 {
-  "updatedAt": "2026-09-19T04:35:21.893Z",
-  "hits": [
-    {
-      "watchId": "default",
-      "origin": "ICN",
-      "destination": "SFO",
-      "destinationName": "샌프란시스코",
-      "date": "2027-08-03",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T04:35:17.768Z"
-    }
-  ]
+  "updatedAt": "2026-09-19T05:01:28.077Z",
+  "hits": []
 }
