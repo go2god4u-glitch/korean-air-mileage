@@ -286,14 +286,23 @@
   function renderHits(job) {
     const results = $('scan-results');
     results.replaceChildren();
-    const hits = job.hits || [];
+    // A seat the airline says is sold out is not a result. It is dropped rather
+    // than greyed out, and counted in the note below so nothing vanishes silently.
+    const all = job.hits || [];
+    const soldOut = all.filter((hit) => hit.live === 'gone').length;
+    const hits = all.filter((hit) => hit.live !== 'gone');
+    $('scan-soldout').textContent = soldOut
+      ? `공개 달력에 있던 ${soldOut}개는 실시간 확인 결과 이미 매진이라 제외했어요.`
+      : '';
     if (!hits.length) {
       const empty = node('div', 'panel empty');
+      const done = job.status === 'complete';
       empty.append(node('div', 'empty-icon', '▦'),
-        node('strong', null, job.status === 'complete' ? '비즈니스석 표시가 있는 날짜가 없어요.' : '아직 찾은 좌석이 없어요.'),
-        node('p', null, job.status === 'complete'
-          ? '조회한 범위에서는 공개 현황에 비즈니스 보너스 표시가 없었어요. 조회 실패나 실시간 매진을 뜻하지는 않아요.'
-          : '조회가 진행되는 대로 결과가 여기에 쌓여요.'));
+        node('strong', null, !done ? '아직 찾은 좌석이 없어요.'
+          : soldOut ? '지금 예약할 수 있는 자리가 없어요.' : '비즈니스석 표시가 있는 날짜가 없어요.'),
+        node('p', null, !done ? '조회가 진행되는 대로 결과가 여기에 쌓여요.'
+          : soldOut ? `공개 달력에 표시된 ${soldOut}개를 실시간으로 확인했는데 모두 이미 나갔어요. 자동 알림을 신청해두면 새로 열릴 때 알려드려요.`
+          : '조회한 범위에서는 공개 현황에 비즈니스 보너스 표시가 없었어요. 조회 실패나 실시간 매진을 뜻하지는 않아요.'));
       results.append(empty);
       return;
     }
@@ -354,7 +363,10 @@
         // The live answer overrides the calendar's: it is the one that can be booked.
         if (hit.live === 'available') {
           card.classList.add('live-ok');
-          card.append(node('span', 'date-live ok', '실시간 확인됨'));
+          // The live answer carries the flight and its mileage price; showing them
+          // is the difference between "probably there" and "this one, this price".
+          const detail = (hit.liveFlights ?? []).join(' · ');
+          card.append(node('span', 'date-live ok', detail || '실시간 확인됨'));
         } else if (hit.live === 'gone') {
           card.classList.add('live-gone');
           card.append(node('span', 'date-live gone', '방금 나갔어요'));
