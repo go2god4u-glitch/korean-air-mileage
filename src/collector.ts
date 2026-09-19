@@ -83,6 +83,9 @@ export interface CollectionOptions {
   destination?: string;
   /** The localhost application only needs calendar data, never page/session artifacts. */
   captureArtifacts?: boolean;
+  /** Korean Air's edge refuses real headless Chrome, so a hidden run stays headed
+   *  and parks the window far off-screen instead. */
+  offscreen?: boolean;
 }
 
 export function validateRoute(origin: string, destination: string): void {
@@ -93,9 +96,12 @@ export function validateRoute(origin: string, destination: string): void {
 
 export async function collectMonth(month: string, headless = false, options: CollectionOptions = {}) {
   validateFutureMonth(month);
-  const { origin = 'ICN', destination = 'JFK', captureArtifacts = true } = options;
+  const { origin = 'ICN', destination = 'JFK', captureArtifacts = true, offscreen = false } = options;
   validateRoute(origin, destination);
-  const browser = await chromium.launch({ channel: 'chrome', headless });
+  const browser = await chromium.launch({
+    channel: 'chrome', headless,
+    args: offscreen && !headless ? ['--window-position=-8000,-8000', '--window-size=1440,1100'] : [],
+  });
   const context = await browser.newContext({
     locale: 'ko-KR', timezoneId: 'Asia/Seoul', viewport: { width: 1440, height: 1100 },
   });

@@ -1,0 +1,337 @@
+'use strict';
+// "비즈니스 이상 타기" tab: sweeps many routes at once instead of one route per search.
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const node = (tag, className, text) => {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
+  };
+  const programNames = { 'korean-air': '대한항공', 'asiana-club': '아시아나' };
+  let catalog = null, config = null, polling = null, running = false, currentJobId = null, startedAt = 0;
+
+  function clockTime(value) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? ''
+      : new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(parsed);
+  }
+
+  function elapsed() {
+    if (!startedAt) return '';
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    return seconds >= 60 ? `${Math.floor(seconds / 60)}분 ${seconds % 60}초 경과` : `${seconds}초 경과`;
+  }
+
+  async function api(url, options) {
+    let response;
+    try {
+      response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', ...(options?.headers || {}) } });
+    } catch {
+      throw new Error('조회 프로그램에 연결할 수 없어요. 실행 창이 열려 있는지 확인해 주세요.');
+    }
+    let data;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error('결과를 불러오지 못했어요.');
+    }
+    if (!response.ok) throw new Error(data.error?.message || '요청을 처리하지 못했어요.');
+    return data;
+  }
+
+  function monthLabel(value) {
+    const [year, month] = (value || '').split('-');
+    return year && month ? `${year}년 ${Number(month)}월` : value;
+  }
+
+  function prettyDate(value) {
+    const parsed = new Date(value + 'T12:00:00+09:00');
+    return Number.isNaN(parsed.getTime()) ? value
+      : new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'long', day: 'numeric', weekday: 'short' }).format(parsed);
+  }
+
+  function airportName(code) {
+    return catalog?.airports.get(code)?.name || code;
+  }
+
+  function setStatus(message, kind = 'info') {
+    $('scan-status').dataset.kind = kind;
+    $('scan-status-text').textContent = message;
+  }
+
+  function checkedValues(containerId) {
+    return Array.from($(containerId).querySelectorAll('input:checked'), (input) => input.value);
+  }
+
+  function renderOrigins() {
+    const korean = catalog.list.filter((airport) => airport.region === '대한민국');
+    const container = $('scan-origins');
+    container.replaceChildren();
+    for (const airport of korean.slice(0, 6)) {
+      const label = node('label', 'scan-check');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = airport.code;
+      input.checked = airport.code === 'ICN';
+      input.addEventListener('change', updateEstimate);
+      label.append(input, node('span', null, `${airport.name} (${airport.code})`));
+      container.append(label);
+    }
+  }
+
+  function renderRegions() {
+    const container = $('scan-regions');
+    container.replaceChildren();
+    const counts = new Map();
+    for (const airport of catalog.list) {
+      if (airport.region === '대한민국') continue;
+      counts.set(airport.region, (counts.get(airport.region) || 0) + 1);
+    }
+    for (const [region, count] of counts) {
+      const label = node('label', 'scan-check');
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = region;
+      input.addEventListener('change', updateEstimate);
+      label.append(input, node('span', null, `${region} (${count}곳)`));
+      container.append(label);
+    }
+  }
+
+  function populateMonths() {
+    const [minYear, minMonth] = config.minMonth.split('-').map(Number);
+    const [maxYear, maxMonth] = config.maxMonth.split('-').map(Number);
+    for (const select of [$('scan-start-month'), $('scan-end-month')]) {
+      select.replaceChildren();
+      for (let cursor = minYear * 12 + minMonth - 1; cursor <= maxYear * 12 + maxMonth - 1; cursor++) {
+        const year = Math.floor(cursor / 12), month = (cursor % 12) + 1;
+        const value = `${year}-${String(month).padStart(2, '0')}`;
+        const option = node('option', null, monthLabel(value));
+        option.value = value;
+        select.append(option);
+      }
+    }
+    $('scan-start-month').value = config.minMonth;
+    $('scan-end-month').value = config.minMonth;
+  }
+
+  function selection() {
+    const origins = checkedValues('scan-origins');
+    const regions = checkedValues('scan-regions');
+    const extra = $('scan-extra-destinations').value.trim().toUpperCase();
+    const destinations = extra ? extra.split(/[^A-Z]+/).filter((code) => /^[A-Z]{3}$/.test(code)) : [];
+    const programs = checkedValues('scan-programs');
+    return {
+      origins: origins.length ? origins : ['ICN'],
+      regions, destinations, programs,
+      startMonth: $('scan-start-month').value,
+      endMonth: $('scan-end-month').value,
+    };
+  }
+
+  function monthCount(startMonth, endMonth) {
+    const [startYear, startNumber] = startMonth.split('-').map(Number);
+    const [endYear, endNumber] = endMonth.split('-').map(Number);
+    return (endYear * 12 + endNumber) - (startYear * 12 + startNumber) + 1;
+  }
+
+  function updateEstimate() {
+    if (!catalog || !config) return;
+    const picked = selection();
+    const regionCodes = new Set(picked.destinations);
+    for (const airport of catalog.list) if (picked.regions.includes(airport.region)) regionCodes.add(airport.code);
+    for (const origin of picked.origins) regionCodes.delete(origin);
+    const months = Math.max(0, monthCount(picked.startMonth, picked.endMonth));
+    const combos = picked.origins.length * regionCodes.size * months;
+    const requests = combos * Math.max(1, picked.programs.length);
+    const note = $('scan-estimate');
+    if (!regionCodes.size) {
+      note.textContent = '지역을 고르거나 공항 코드를 입력해 주세요.';
+      note.dataset.kind = 'info';
+    } else {
+      const minutes = Math.ceil((requests * 15) / 60);
+      const duration = minutes >= 60 ? `${Math.floor(minutes / 60)}시간 ${minutes % 60}분` : `${minutes}분`;
+      note.textContent = `목적지 ${regionCodes.size}곳 × ${months}개월 = 조합 ${combos}건 · 요청 ${requests}회 · 예상 ${duration}쯤 걸려요. 한 번에 한 건씩 조회하고, 찾는 대로 아래에 바로 보여드려요. 중간에 멈출 수 있어요.`;
+      note.dataset.kind = minutes > 90 ? 'warn' : 'info';
+    }
+    $('scan-button').disabled = running || !regionCodes.size || !picked.programs.length;
+  }
+
+  function renderHits(job) {
+    const results = $('scan-results');
+    results.replaceChildren();
+    const hits = job.hits || [];
+    if (!hits.length) {
+      const empty = node('div', 'panel empty');
+      empty.append(node('div', 'empty-icon', '▦'),
+        node('strong', null, job.status === 'complete' ? '비즈니스석 표시가 있는 날짜가 없어요.' : '아직 찾은 좌석이 없어요.'),
+        node('p', null, job.status === 'complete'
+          ? '조회한 범위에서는 공개 현황에 비즈니스 보너스 표시가 없었어요. 조회 실패나 실시간 매진을 뜻하지는 않아요.'
+          : '조회가 진행되는 대로 결과가 여기에 쌓여요.'));
+      results.append(empty);
+      return;
+    }
+    const byRoute = new Map();
+    for (const hit of hits) {
+      const key = `${hit.program}|${hit.origin}|${hit.destination}`;
+      if (!byRoute.has(key)) byRoute.set(key, []);
+      byRoute.get(key).push(hit);
+    }
+    // Newest finding first while a scan is live, so results read as they arrive.
+    const ordered = [...byRoute.entries()].sort((a, b) => running
+      ? String(b[1][0]?.foundAt || '').localeCompare(String(a[1][0]?.foundAt || ''))
+      : b[1].length - a[1].length);
+    for (const [key, routeHits] of ordered) {
+      const [program, origin, destination] = key.split('|');
+      const panel = node('section', 'panel leg-panel');
+      const top = node('div', 'leg-top'), detail = node('div');
+      detail.append(node('span', 'direction', programNames[program] || program));
+      const route = node('div', 'route-line');
+      route.append(node('h3', null, origin), node('span', 'arrow', '→'), node('h3', null, destination));
+      detail.append(route, node('div', 'route-details', `${airportName(destination)} · 비즈니스 보너스 좌석`));
+      const count = node('div', 'result-count');
+      count.append(node('strong', null, String(routeHits.length)), node('span', null, '일'),
+        node('div', 'count-label', '좌석 표시가 있는 날짜'));
+      top.append(detail, count);
+      panel.append(top);
+      const foundAt = routeHits[0]?.foundAt;
+      if (foundAt) panel.append(node('p', 'coverage-note', `${clockTime(foundAt)}에 확인했어요`));
+      const grid = node('div', 'date-grid');
+      for (const hit of routeHits.sort((a, b) => a.date.localeCompare(b.date))) {
+        const card = node('div', 'date-card');
+        card.append(node('span', 'date-top', prettyDate(hit.date).replace(/\s\(.*\)$/, '')),
+          node('span', 'date-number', String(Number(hit.date.slice(8, 10)))),
+          node('span', 'date-badge', '비즈니스'));
+        grid.append(card);
+      }
+      panel.append(grid);
+      results.append(panel);
+    }
+  }
+
+  async function poll(jobId) {
+    try {
+      const job = await api(`/api/business-scan/jobs/${jobId}`);
+      const percent = job.total ? Math.round((job.completed / job.total) * 100) : 0;
+      const live = job.status === 'running' || job.status === 'queued';
+      let detail = `${job.completed}/${job.total} · ${percent}%`;
+      if (live && job.completed > 0) {
+        const perLeg = (Date.now() - startedAt) / job.completed;
+        const remaining = Math.ceil((perLeg * (job.total - job.completed)) / 60000);
+        detail += ` · ${elapsed()} · 남은 시간 약 ${remaining}분`;
+      }
+      const found = (job.hits || []).length;
+      setStatus(`${job.message || '조회 중이에요.'} (${detail}${found ? ` · 지금까지 ${found}건 발견` : ''})`,
+        job.status === 'failed' ? 'error' : job.status === 'complete' ? 'success' : 'busy');
+      renderHits(job);
+      if (live) return;
+      clearInterval(polling);
+      polling = null;
+      running = false;
+      currentJobId = null;
+      $('scan-cancel').hidden = true;
+      $('scan-button').textContent = '비즈니스석 검색';
+      const notes = [];
+      if ((job.skipped || []).length) {
+        const routes = job.skipped.slice(0, 6).map((key) => {
+          const [program, origin, destination] = key.split('|');
+          return `${programNames[program] || program} ${origin}→${destination}`;
+        });
+        notes.push(`미취항으로 확인돼 건너뛴 노선 ${job.skipped.length}개: ${routes.join(', ')}${job.skipped.length > 6 ? ' 외' : ''} (다음 검색부터 자동으로 제외해요)`);
+      }
+      if ((job.failures || []).length) {
+        const lines = job.failures.slice(0, 5).map((f) => `${programNames[f.program] || f.program} ${f.origin || ''}${f.destination ? '→' + f.destination : ''} ${f.month || ''}`.trim());
+        notes.push(`조회하지 못한 구간 ${job.failures.length}건: ${lines.join(', ')}${job.failures.length > 5 ? ' 외' : ''} — 좌석이 없다는 뜻은 아니에요.`);
+      }
+      $('scan-failures').textContent = notes.join(' · ');
+      updateEstimate();
+    } catch (error) {
+      clearInterval(polling);
+      polling = null;
+      running = false;
+      currentJobId = null;
+      $('scan-cancel').hidden = true;
+      $('scan-button').textContent = '비즈니스석 검색';
+      setStatus(error.message, 'error');
+      updateEstimate();
+    }
+  }
+
+  async function cancelScan() {
+    if (!currentJobId) return;
+    $('scan-cancel').disabled = true;
+    try {
+      await api('/api/business-scan/cancel', { method: 'POST', body: JSON.stringify({ jobId: currentJobId }) });
+      setStatus('조회를 멈추고 있어요. 진행 중인 1건이 끝나면 멈춰요.', 'busy');
+    } catch (error) {
+      setStatus(error.message, 'error');
+    } finally {
+      $('scan-cancel').disabled = false;
+    }
+  }
+
+  async function startScan(event) {
+    event.preventDefault();
+    if (running) return;
+    try {
+      running = true;
+      startedAt = Date.now();
+      $('scan-button').disabled = true;
+      $('scan-button').textContent = '조회 중이에요…';
+      $('scan-failures').textContent = '';
+      setStatus('조회를 시작하고 있어요. 창은 화면 밖에서 열리므로 보이지 않아요.', 'busy');
+      const { jobId } = await api('/api/business-scan', { method: 'POST', body: JSON.stringify(selection()) });
+      currentJobId = jobId;
+      $('scan-cancel').hidden = false;
+      polling = setInterval(() => void poll(jobId), 1500);
+      void poll(jobId);
+    } catch (error) {
+      running = false;
+      currentJobId = null;
+      $('scan-cancel').hidden = true;
+      $('scan-button').textContent = '비즈니스석 검색';
+      setStatus(error.message, 'error');
+      updateEstimate();
+    }
+  }
+
+  function showTab(name) {
+    const scan = name === 'scan';
+    $('scan-tab-panel').hidden = !scan;
+    for (const section of ['search-section', 'award-area', 'results-area']) {
+      const element = document.getElementById(section);
+      if (element) element.hidden = scan || element.dataset.hiddenByProgram === 'true';
+    }
+    $('tab-single').setAttribute('aria-selected', String(!scan));
+    $('tab-scan').setAttribute('aria-selected', String(scan));
+  }
+
+  async function init() {
+    $('tab-single').addEventListener('click', () => showTab('single'));
+    $('tab-scan').addEventListener('click', () => showTab('scan'));
+    $('scan-form').addEventListener('submit', startScan);
+    $('scan-cancel').addEventListener('click', cancelScan);
+    $('scan-start-month').addEventListener('change', updateEstimate);
+    $('scan-end-month').addEventListener('change', updateEstimate);
+    $('scan-extra-destinations').addEventListener('input', updateEstimate);
+    for (const input of $('scan-programs').querySelectorAll('input')) input.addEventListener('change', updateEstimate);
+    try {
+      const [routes, appConfig] = await Promise.all([api('/api/routes'), api('/api/config')]);
+      const airports = new Map();
+      for (const airport of routes.airports) airports.set(airport.code, airport);
+      catalog = { airports, list: routes.airports };
+      config = appConfig;
+      renderOrigins();
+      renderRegions();
+      populateMonths();
+      updateEstimate();
+      setStatus('출발 공항과 가고 싶은 지역, 기간을 고른 뒤 검색해 주세요.');
+    } catch (error) {
+      setStatus(error.message, 'error');
+    }
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else void init();
+})();

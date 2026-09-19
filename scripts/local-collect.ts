@@ -3,7 +3,8 @@ import { CalendarParseError } from '../src/parser.js';
 
 // Private bridge for the Python localhost server. One explicit call means one
 // anonymous, headed, one-way monthly search. Cache/locking belongs to that server.
-const args = process.argv.slice(2);
+const args = process.argv.slice(2).filter((value) => value !== '--hidden');
+const hidden = process.argv.slice(2).includes('--hidden');
 
 try {
   const values = new Map<string, string>();
@@ -21,6 +22,7 @@ try {
   }
   const result = await collectMonth(values.get('--month')!, false, {
     origin: values.get('--origin')!, destination: values.get('--destination')!, captureArtifacts: false,
+    offscreen: hidden,
   });
   process.stdout.write(JSON.stringify({ calendar: result.data }) + '\n');
 } catch (error) {

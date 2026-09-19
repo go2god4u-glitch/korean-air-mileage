@@ -18,6 +18,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -220,6 +221,98 @@ def validate_request(raw, today=None):
     return params
 
 
+BUSINESS_SCAN_PROGRAMS = ("korean-air", "asiana-club")
+# A long sweep is fine — it runs one request at a time and can be stopped mid-way.
+# This bound only catches a runaway request, not a deliberately wide search.
+BUSINESS_SCAN_MAX_LEGS = 2000
+# An airline that does not fly a route answers differently from one that is simply
+# out of seats, so these are remembered and skipped instead of retried every scan.
+UNSUPPORTED_ROUTE_CODES = {"ROUTE_UNAVAILABLE", "UNSUPPORTED_ROUTE", "AIRPORT_NOT_FOUND"}
+
+
+def business_scan_months(start_month, end_month, today=None):
+    minimum, maximum = month_bounds(today)
+    for value, label in ((start_month, "시작 달"), (end_month, "끝 달")):
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", value):
+            raise AppError("INVALID_MONTH", "조회할 기간을 선택해 주세요.")
+    if not (minimum <= start_month <= maximum) or not (minimum <= end_month <= maximum):
+        raise AppError("MONTH_OUT_OF_RANGE", "지금은 %s부터 %s까지 조회할 수 있어요." % (minimum, maximum))
+    if start_month > end_month:
+        raise AppError("INVALID_RETURN_MONTH", "끝 달은 시작 달보다 앞설 수 없어요.")
+    months = []
+    year, month = map(int, start_month.split("-"))
+    end_year, end_month_number = map(int, end_month.split("-"))
+    while (year, month) <= (end_year, end_month_number):
+        months.append("%04d-%02d" % (year, month))
+        month += 1
+        if month > 12:
+            month, year = 1, year + 1
+    return months
+
+
+def validate_business_scan_request(raw, today=None):
+    """One request can sweep many origin/destination/month combinations at once.
+    Region names are cross-checked against the same static catalogue the single-route
+    combobox uses, never invented from free text."""
+    if not isinstance(raw, dict):
+        raise AppError("INVALID_INPUT", "검색 조건을 확인해 주세요.")
+    catalog = read_route_catalog()
+    known_regions = {airport["region"] for airport in catalog["airports"]}
+
+    def codes(field, label, allow_empty_default=None):
+        values = raw.get(field, [])
+        if values in (None, []) and allow_empty_default is not None:
+            return list(allow_empty_default)
+        if not isinstance(values, list):
+            raise AppError("INVALID_INPUT", "%s 목록을 확인해 주세요." % label)
+        result, seen = [], set()
+        for value in values:
+            code = str(value).strip().upper()
+            if not re.fullmatch(r"[A-Z]{3}", code) or code in seen:
+                raise AppError("INVALID_AIRPORT", "%s 공항 코드를 확인해 주세요." % label)
+            seen.add(code)
+            result.append(code)
+        return result
+
+    origins = codes("origins", "출발", allow_empty_default=["ICN"])
+    if not origins:
+        raise AppError("INVALID_INPUT", "출발 공항을 하나 이상 선택해 주세요.")
+
+    explicit_destinations = codes("destinations", "도착")
+    regions = raw.get("regions", [])
+    if not isinstance(regions, list):
+        raise AppError("INVALID_INPUT", "지역 목록을 확인해 주세요.")
+    region_names = []
+    for value in regions:
+        name = str(value)
+        if name not in known_regions:
+            raise AppError("INVALID_REGION", "알 수 없는 지역이에요. 목록에서 다시 선택해 주세요.")
+        region_names.append(name)
+
+    destination_set = set(explicit_destinations)
+    for airport in catalog["airports"]:
+        if airport["region"] in region_names:
+            destination_set.add(airport["code"])
+    destinations = sorted(destination_set - set(origins))
+    if not destinations:
+        raise AppError("INVALID_INPUT", "목적지를 하나 이상 선택하거나 지역을 골라 주세요.")
+
+    programs = raw.get("programs", list(BUSINESS_SCAN_PROGRAMS))
+    if not isinstance(programs, list) or not programs or any(p not in BUSINESS_SCAN_PROGRAMS for p in programs):
+        raise AppError("INVALID_INPUT", "조회할 프로그램을 선택해 주세요.")
+    programs = [p for p in BUSINESS_SCAN_PROGRAMS if p in programs]
+
+    minimum, maximum = month_bounds(today)
+    months = business_scan_months(raw.get("startMonth", minimum), raw.get("endMonth", maximum), today)
+
+    total = len(origins) * len(destinations) * len(months)
+    if total > BUSINESS_SCAN_MAX_LEGS:
+        raise AppError("SCAN_TOO_LARGE",
+                        "조합이 %d건이라 한 번에 처리하기 어려워요(최대 %d건). 지역이나 기간을 조금 줄여 주세요." % (total, BUSINESS_SCAN_MAX_LEGS))
+
+    return {"origins": origins, "destinations": destinations, "months": months, "programs": programs}
+
+
 def validate_handoff_request(raw, today=None):
     """Only explicit, valid dates attached to the displayed month are forwarded."""
     params = validate_request(raw, today)
@@ -394,8 +487,10 @@ def collect_leg(leg, root=ROOT):
     tsx = Path(root) / "node_modules" / "tsx" / "dist" / "cli.mjs"
     if not node or not tsx.is_file():
         raise AppError("DEPENDENCIES_MISSING", "조회에 필요한 도구가 아직 설치되지 않았어요. 프로젝트 폴더에서 npm ci를 실행해 주세요.")
+    # Korean Air's edge refuses real headless Chrome, so the collector stays headed
+    # and parks its window off-screen instead of interrupting the desktop.
     command = [node, str(tsx), str(Path(root) / "scripts" / "local-collect.ts"),
-               "--origin", leg["origin"], "--destination", leg["destination"], "--month", leg["month"]]
+               "--origin", leg["origin"], "--destination", leg["destination"], "--month", leg["month"], "--hidden"]
     process = subprocess.Popen(command, cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                text=True, encoding="utf-8", errors="replace", **process_creation_options())
     try:
@@ -665,6 +760,174 @@ class SearchService:
                 self.active = None
 
 
+class BusinessScanService:
+    """Sweeps many origin/destination/month combinations for business-class award
+    seats across Korean Air (public calendar) and Asiana (worker Chrome, no login
+    needed for its public calendar). Shares SearchService's lock/active/restricted
+    state so it never runs alongside a manual single-route search."""
+
+    def __init__(self, search_service, award_service, root=ROOT):
+        self.search = search_service
+        self.award = award_service
+        self.root = Path(root)
+        self.jobs = {}
+        self.cancelled = set()
+        self.unsupported_path = self.search.store.directory / "unsupported-routes.json"
+
+    def cancel(self, job_id):
+        with self.search.lock:
+            if job_id not in self.jobs:
+                raise AppError("JOB_NOT_FOUND", "조회 기록을 찾지 못했어요.", 404)
+            if self.jobs[job_id]["status"] not in ("queued", "running"):
+                return {"status": self.jobs[job_id]["status"]}
+            self.cancelled.add(job_id)
+            self.jobs[job_id]["message"] = "조회를 멈추고 있어요. 진행 중인 1건이 끝나면 멈춰요."
+        try:
+            self.award.cancel("asiana-club")
+        except (SasError, AppError):
+            pass
+        return {"status": "cancelling"}
+
+    def unsupported_routes(self):
+        try:
+            value = json.loads(self.unsupported_path.read_text(encoding="utf-8"))
+            return {key for key in value.get("routes", []) if isinstance(key, str)}
+        except (OSError, ValueError, TypeError, AttributeError):
+            return set()
+
+    def remember_unsupported(self, program, origin, destination):
+        routes = self.unsupported_routes()
+        routes.add("%s|%s|%s" % (program, origin, destination))
+        try:
+            self.search.store.write_json(self.unsupported_path, {"routes": sorted(routes)})
+        except OSError:
+            pass
+
+    def start(self, raw):
+        params = validate_business_scan_request(raw)
+        legs = [{"origin": origin, "destination": destination, "month": month}
+                for origin in params["origins"] for destination in params["destinations"] for month in params["months"]]
+        with self.search.lock:
+            if self.search.active:
+                raise AppError("BUSY", "다른 조회나 자동 입력을 진행하고 있어요. 끝난 뒤 다시 눌러 주세요.", 409)
+            job_id = uuid.uuid4().hex
+            if len(self.jobs) >= 20:
+                del self.jobs[next(iter(self.jobs))]
+            self.jobs[job_id] = {"status": "queued", "progress": 0, "message": "스캔을 준비하고 있어요.",
+                                  "total": len(legs) * len(params["programs"]), "completed": 0,
+                                  "hits": [], "failures": []}
+            self.search.active = job_id
+            threading.Thread(target=self._run, args=(job_id, legs, params["programs"]), daemon=True).start()
+            return job_id
+
+    def get(self, job_id):
+        with self.search.lock:
+            if job_id not in self.jobs:
+                raise AppError("JOB_NOT_FOUND", "조회 기록을 찾지 못했어요.", 404)
+            return dict(self.jobs[job_id])
+
+    def update(self, job_id, **fields):
+        with self.search.lock:
+            self.jobs[job_id].update(fields)
+
+    def _collect_korean_air(self, leg):
+        value = self.search.store.read(leg)
+        if value is None or self.search.store.stale(value):
+            value = collect_leg(leg, self.root)
+            self.search.store.save(value, leg)
+        return [row["date"] for row in value["dates"] if row.get("prestigeAward")]
+
+    def _collect_asiana(self, leg):
+        payload = {"program": "asiana-club", "origin": leg["origin"], "destination": leg["destination"],
+                   "month": leg["month"], "tripType": "ONE_WAY", "cabin": "business"}
+        self.award.start(payload)
+        for _ in range(600):
+            time.sleep(1)
+            job = self.award.status("asiana-club").get("job") or {}
+            if job.get("status") in ("complete", "partial", "failed", "cancelled"):
+                if job.get("status") in ("failed", "cancelled"):
+                    code = job.get("code") or "SEARCH_FAILED"
+                    raise AppError(code, "아시아나 조회를 완료하지 못했어요." if code not in RESTRICTIONS
+                                    else "아시아나에서 접속을 제한했어요.")
+                days = job.get("legs", [{}])[0].get("days", [])
+                return [day["date"] for day in days if "business" in (day.get("cabins") or [])]
+        raise AppError("COLLECTION_TIMEOUT", "아시아나 조회가 오래 걸려 중단했어요.")
+
+    def _run(self, job_id, legs, programs):
+        hits, failures, completed = [], [], 0
+        total = len(legs) * len(programs)
+        try:
+            if "asiana-club" in programs:
+                try:
+                    self.award.open("asiana-club")
+                except SasError:
+                    programs = [p for p in programs if p != "asiana-club"]
+                    failures.append({"program": "asiana-club", "code": "BROWSER_OPEN_FAILED",
+                                      "message": "아시아나 조회용 Chrome을 열지 못해 이 프로그램은 건너뛸게요."})
+                    total = len(legs) * len(programs)
+            unsupported = self.unsupported_routes()
+            skipped = []
+            for leg in legs:
+                for program in programs:
+                    if job_id in self.cancelled:
+                        raise StopIteration()
+                    route_key = "%s|%s|%s" % (program, leg["origin"], leg["destination"])
+                    if route_key in unsupported:
+                        completed += 1
+                        if route_key not in skipped:
+                            skipped.append(route_key)
+                        self.update(job_id, completed=completed, skipped=list(skipped))
+                        continue
+                    with self.search.lock:
+                        if self.search.restricted or self.search.store.block_path.exists():
+                            raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 새로 조회할 수 없어요.")
+                    self.update(job_id, status="running", progress=round(completed / total * 100) if total else 100,
+                                message="%s %s→%s · %s 확인하고 있어요." % (
+                                    "대한항공" if program == "korean-air" else "아시아나",
+                                    leg["origin"], leg["destination"], leg["month"]))
+                    try:
+                        dates = self._collect_korean_air(leg) if program == "korean-air" else self._collect_asiana(leg)
+                    except AppError as leg_error:
+                        if leg_error.code in RESTRICTIONS:
+                            raise
+                        if leg_error.code in UNSUPPORTED_ROUTE_CODES:
+                            self.remember_unsupported(program, leg["origin"], leg["destination"])
+                            unsupported.add(route_key)
+                            if route_key not in skipped:
+                                skipped.append(route_key)
+                        else:
+                            failures.append({"program": program, "origin": leg["origin"], "destination": leg["destination"],
+                                              "month": leg["month"], "code": leg_error.code})
+                        completed += 1
+                        self.update(job_id, completed=completed, failures=list(failures), skipped=list(skipped))
+                        continue
+                    found_at = utc_now().isoformat()
+                    for date in dates:
+                        hits.append({"program": program, "origin": leg["origin"], "destination": leg["destination"],
+                                     "month": leg["month"], "date": date, "foundAt": found_at})
+                    completed += 1
+                    self.update(job_id, completed=completed, hits=list(hits))
+            self.update(job_id, status="complete", progress=100,
+                        message="스캔을 마쳤어요. 비즈니스석 %d건을 찾았어요.%s" % (
+                            len(hits), " 미취항 노선 %d개는 건너뛰었어요." % len(skipped) if skipped else ""),
+                        hits=hits, failures=failures, skipped=skipped)
+        except StopIteration:
+            self.update(job_id, status="cancelled", message="조회를 멈췄어요. 지금까지 찾은 결과는 그대로 남아 있어요.",
+                        hits=hits, failures=failures, skipped=skipped)
+        except AppError as error:
+            if error.code in RESTRICTIONS:
+                self.search.restrict(error.code)
+            self.update(job_id, status="failed", message=error.message,
+                        error={"code": error.code, "message": error.message}, hits=hits, failures=failures)
+        except Exception:
+            self.update(job_id, status="failed", message="스캔 중 문제가 생겼어요. 지금까지 찾은 결과는 남아 있어요.",
+                        error={"code": "LOCAL_ERROR", "message": "스캔 중 문제가 생겼어요."}, hits=hits, failures=failures)
+        finally:
+            with self.search.lock:
+                self.search.active = None
+                self.cancelled.discard(job_id)
+
+
 def app_config():
     today = datetime.now(SEOUL).date()
     minimum, maximum = month_bounds(today)
@@ -682,6 +945,7 @@ class LocalServer(ThreadingHTTPServer):
         self.sas_store = SasStore(self.service.store.root)
         self.sas_service = SasService(self.service.store.root, self.sas_store)
         self.award_service = AwardService(self.service.store.root, self.sas_service)
+        self.business_scan_service = BusinessScanService(self.service, self.award_service)
         super().__init__(address, Handler)
 
 
@@ -756,6 +1020,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(self.server.service.store.result(params))
             elif re.fullmatch(r"/api/jobs/[a-f0-9]{32}", target.path):
                 self.respond(self.server.service.get(target.path.rsplit("/", 1)[-1]))
+            elif re.fullmatch(r"/api/business-scan/jobs/[a-f0-9]{32}", target.path):
+                self.respond(self.server.business_scan_service.get(target.path.rsplit("/", 1)[-1]))
+            elif target.path == "/business-scan-ui.js":
+                body = (ROOT / "local_web" / "business-scan-ui.js").read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/javascript; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
+                self.end_headers()
+                self.wfile.write(body)
             else:
                 raise AppError("NOT_FOUND", "페이지를 찾을 수 없어요.", 404)
         except SasError as error:
@@ -766,7 +1041,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             self.allowed(mutation=True)
-            if self.path not in ("/api/search", "/api/open-airline", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
+            if self.path not in ("/api/search", "/api/business-scan", "/api/business-scan/cancel", "/api/open-airline", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
                 raise AppError("NOT_FOUND", "요청한 기능을 찾을 수 없어요.", 404)
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
                 raise AppError("INVALID_INPUT", "검색 조건을 확인해 주세요.", 415)
@@ -799,6 +1074,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/open-account":
                 self.respond(open_account_page(payload))
+                return
+            if self.path == "/api/business-scan":
+                self.respond({"jobId": self.server.business_scan_service.start(payload)}, 202)
+                return
+            if self.path == "/api/business-scan/cancel":
+                job_id = payload.get("jobId") if isinstance(payload, dict) else None
+                if not isinstance(job_id, str) or not re.fullmatch(r"[a-f0-9]{32}", job_id):
+                    raise AppError("INVALID_INPUT", "멈출 조회를 찾지 못했어요.")
+                self.respond(self.server.business_scan_service.cancel(job_id))
                 return
             if self.path == "/api/open-airline":
                 selection = validate_handoff_request(payload)

@@ -670,7 +670,7 @@ class CollectorProcessContractTests(unittest.TestCase):
         self.assertEqual(self.popen.call_count, 1)
         arguments = self.popen.call_args.args[0]
         self.assertIsInstance(arguments, list)
-        self.assertEqual(arguments[-6:], ["--origin", "ICN", "--destination", "SIN", "--month", "2026-11"])
+        self.assertEqual(arguments[-7:], ["--origin", "ICN", "--destination", "SIN", "--month", "2026-11", "--hidden"])
         self.assertFalse(self.popen.call_args.kwargs.get("shell", False))
 
     def test_process_restriction_codes_reach_service_without_retry(self):

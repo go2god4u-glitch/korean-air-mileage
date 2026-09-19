@@ -101,7 +101,7 @@ async function main(): Promise<void> {
     let destinationFailed = false;
     for (const month of months) {
       try {
-        const result = await collectMonth(month, false, { origin, destination: destination.code, captureArtifacts: false });
+        const result = await collectMonth(month, false, { origin, destination: destination.code, captureArtifacts: false, offscreen: true });
         for (const day of result.data.dates) {
           if (day.prestigeAward) {
             hits.push({
