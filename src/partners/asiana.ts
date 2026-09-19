@@ -1,28 +1,54 @@
 import type {Page} from 'playwright';
 export interface MonthQuery {origin:string;destination:string;month:string}
+// Asiana's form reacts to unhurried input: typing a code instantly can leave the
+// destination autocomplete uninstalled, and back-to-back searches draw rate limits.
+// Every step is deliberately paced — a slow search that completes beats a fast one
+// that gets refused.
+const TYPE_DELAY=140;
+const settle=(page:Page,ms=1200)=>page.waitForTimeout(ms);
 export async function searchAsiana(page:Page,q:MonthQuery,cancelled:()=>boolean) {
   try {
     if(cancelled())throw new Error('CANCELLED');
     await page.goto('https://flyasiana.com/I/KR/KO/MileageSeatSearch.do',{waitUntil:'domcontentloaded',timeout:45000});
     if(/Access Denied/i.test(await page.locator('body').innerText()))throw new Error('ACCESS_RESTRICTED');
+    await settle(page);
     await page.getByRole('link',{name:'편도',exact:true}).click();
+    await settle(page);
     await page.locator('#txtDepartureAirport1.ui-autocomplete-input').waitFor();
-    await page.locator('#txtDepartureAirport1').fill('');await page.locator('#txtDepartureAirport1').pressSequentially(q.origin);
+    await page.locator('#txtDepartureAirport1').click();
+    await page.locator('#txtDepartureAirport1').fill('');
+    await page.locator('#txtDepartureAirport1').pressSequentially(q.origin,{delay:TYPE_DELAY});
     const departure=page.locator('#divDepAirportAC1 li').filter({hasText:q.origin});
-    try {await departure.first().waitFor({timeout:8000});} catch {throw new Error('ROUTE_UNAVAILABLE');}
-    await departure.click();
-    // Destination autocomplete is installed asynchronously after an origin is committed.
-    await page.locator('#txtArrivalAirport1.ui-autocomplete-input').waitFor();
-    await page.locator('#txtArrivalAirport1').fill('');await page.locator('#txtArrivalAirport1').pressSequentially(q.destination);
+    try {await departure.first().waitFor({timeout:10000});} catch {throw new Error('ROUTE_UNAVAILABLE');}
+    await departure.first().click();
+    await settle(page);
+    // The destination autocomplete is installed asynchronously once an origin is
+    // committed, and sometimes only after the field itself is focused.
+    const arrivalInput=page.locator('#txtArrivalAirport1');
+    let ready=false;
+    for(let attempt=0;attempt<6&&!ready;attempt++) {
+      if(cancelled())throw new Error('CANCELLED');
+      try {
+        await arrivalInput.click({timeout:5000});
+        await page.locator('#txtArrivalAirport1.ui-autocomplete-input').waitFor({timeout:5000});
+        ready=true;
+      } catch {await settle(page,1500);}
+    }
+    if(!ready)throw new Error('STRUCTURE_CHANGED');
+    await arrivalInput.fill('');
+    await arrivalInput.pressSequentially(q.destination,{delay:TYPE_DELAY});
     // An airport Asiana does not serve from this origin never reaches the suggestion
     // list. Say so explicitly instead of timing out on a click that can never happen.
     const arrival=page.locator('#divArrAirportAC1 li').filter({hasText:q.destination});
-    try {await arrival.first().waitFor({timeout:8000});} catch {throw new Error('ROUTE_UNAVAILABLE');}
-    await arrival.click();
+    try {await arrival.first().waitFor({timeout:10000});} catch {throw new Error('ROUTE_UNAVAILABLE');}
+    await arrival.first().click();
+    await settle(page);
     if(await page.locator('#departureAirport1').inputValue()!==q.origin||await page.locator('#arrivalAirport1').inputValue()!==q.destination)throw new Error('QUERY_MISMATCH');
     await page.locator('#sCalendarMonth').click();
+    await settle(page);
     const [year,month]=q.month.split('-');
     await page.locator(`.month_btn[data-year="${year}"][data-month="${Number(month)}"]`).click();
+    await settle(page);
     let dialogMessage='';const dialogHandler=async(d:any)=>{dialogMessage=d.message();await d.dismiss();};page.on('dialog',dialogHandler);
     try {
       await page.locator('#btn_MileageSeat_search').click();

@@ -228,6 +228,8 @@ BUSINESS_SCAN_MAX_LEGS = 2000
 # An airline that does not fly a route answers differently from one that is simply
 # out of seats, so these are remembered and skipped instead of retried every scan.
 UNSUPPORTED_ROUTE_CODES = {"ROUTE_UNAVAILABLE", "UNSUPPORTED_ROUTE", "AIRPORT_NOT_FOUND"}
+# Seconds to leave between Asiana lookups. Its site refuses rapid repeats.
+ASIANA_REQUEST_INTERVAL = 20
 
 
 def business_scan_months(start_month, end_month, today=None):
@@ -772,6 +774,7 @@ class BusinessScanService:
         self.root = Path(root)
         self.jobs = {}
         self.cancelled = set()
+        self.last_asiana_at = None
         self.unsupported_path = self.search.store.directory / "unsupported-routes.json"
 
     def cancel(self, job_id):
@@ -838,6 +841,14 @@ class BusinessScanService:
         return [row["date"] for row in value["dates"] if row.get("prestigeAward")]
 
     def _collect_asiana(self, leg):
+        # Asiana refuses back-to-back lookups, so each one waits its turn. A slow
+        # sweep that finishes beats a fast one that gets rate limited.
+        if self.last_asiana_at:
+            wait = ASIANA_REQUEST_INTERVAL - (time.monotonic() - self.last_asiana_at)
+            while wait > 0:
+                time.sleep(min(wait, 1))
+                wait -= 1
+        self.last_asiana_at = time.monotonic()
         payload = {"program": "asiana-club", "origin": leg["origin"], "destination": leg["destination"],
                    "month": leg["month"], "tripType": "ONE_WAY", "cabin": "business"}
         self.award.start(payload)
@@ -861,10 +872,15 @@ class BusinessScanService:
             # login window is opened here.
             unsupported = self.unsupported_routes()
             skipped = []
+            restricted_programs = set()
             for leg in legs:
                 for program in programs:
                     if job_id in self.cancelled:
                         raise StopIteration()
+                    if program in restricted_programs:
+                        completed += 1
+                        self.update(job_id, completed=completed)
+                        continue
                     route_key = "%s|%s|%s" % (program, leg["origin"], leg["destination"])
                     if route_key in unsupported:
                         completed += 1
@@ -883,7 +899,16 @@ class BusinessScanService:
                         dates = self._collect_korean_air(leg) if program == "korean-air" else self._collect_asiana(leg)
                     except AppError as leg_error:
                         if leg_error.code in RESTRICTIONS:
-                            raise
+                            # One airline refusing us must not cancel the other's sweep.
+                            if program != "asiana-club":
+                                raise
+                            restricted_programs.add(program)
+                            failures.append({"program": program, "origin": leg["origin"],
+                                              "destination": leg["destination"], "month": leg["month"],
+                                              "code": leg_error.code})
+                            completed += 1
+                            self.update(job_id, completed=completed, failures=list(failures))
+                            continue
                         if leg_error.code in UNSUPPORTED_ROUTE_CODES:
                             self.remember_unsupported(program, leg["origin"], leg["destination"])
                             unsupported.add(route_key)
@@ -902,8 +927,10 @@ class BusinessScanService:
                     completed += 1
                     self.update(job_id, completed=completed, hits=list(hits))
             self.update(job_id, status="complete", progress=100,
-                        message="스캔을 마쳤어요. 비즈니스석 %d건을 찾았어요.%s" % (
-                            len(hits), " 미취항 노선 %d개는 건너뛰었어요." % len(skipped) if skipped else ""),
+                        message="스캔을 마쳤어요. 비즈니스석 %d건을 찾았어요.%s%s" % (
+                            len(hits),
+                            " 미취항 노선 %d개는 건너뛰었어요." % len(skipped) if skipped else "",
+                            " 아시아나는 접속이 제한되어 건너뛰었어요." if "asiana-club" in restricted_programs else ""),
                         hits=hits, failures=failures, skipped=skipped)
         except StopIteration:
             self.update(job_id, status="cancelled", message="조회를 멈췄어요. 지금까지 찾은 결과는 그대로 남아 있어요.",
