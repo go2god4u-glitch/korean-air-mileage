@@ -32,18 +32,14 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y google-chrome-stable
           fi
-          sudo apt-get install -y xvfb
 
       - run: npm ci
 
-      # Korean Air's edge rejects real headless Chrome (HTTP2 protocol error), so
-      # the collector launches "headed". Xvfb gives it a virtual display so nothing
-      # is ever visible anywhere — this runs on GitHub's servers, not a desktop.
       - name: Run business seat scan
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: xvfb-run --auto-servernum -- node --import tsx scripts/business-scan.ts
+        run: node --import tsx scripts/business-scan.ts
 
       - name: Commit updated results
         run: |

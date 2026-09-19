@@ -4,10 +4,8 @@
 // origin/destination/month, same as the interactive collector — no retries, no
 // concurrency, and an immediate stop on any access restriction.
 //
-// Chrome's headless mode is served an HTTP2 protocol error by Korean Air's edge
-// (confirmed against the live site), so this launches "headed" like the
-// interactive collector. In CI that must run under a virtual display (Xvfb) so no
-// window is ever visible to anyone — see .github/workflows/business-scan.yml.
+// Runs fully headless: the airline edge only refuses Chrome's own headless user
+// agent, which the collector overrides, so no browser window is ever created.
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -101,7 +99,7 @@ async function main(): Promise<void> {
     let destinationFailed = false;
     for (const month of months) {
       try {
-        const result = await collectMonth(month, false, { origin, destination: destination.code, captureArtifacts: false, offscreen: true });
+        const result = await collectMonth(month, true, { origin, destination: destination.code, captureArtifacts: false });
         for (const day of result.data.dates) {
           if (day.prestigeAward) {
             hits.push({

@@ -14,6 +14,9 @@ const FILTER_LABELS = [
   '일등석 보너스/좌석승급',
 ] as const;
 
+const HEADLESS_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36';
+
 export class CollectionError extends Error {
   constructor(public readonly code: string, message: string) {
     super(message);
@@ -83,9 +86,6 @@ export interface CollectionOptions {
   destination?: string;
   /** The localhost application only needs calendar data, never page/session artifacts. */
   captureArtifacts?: boolean;
-  /** Korean Air's edge refuses real headless Chrome, so a hidden run stays headed
-   *  and parks the window far off-screen instead. */
-  offscreen?: boolean;
 }
 
 export function validateRoute(origin: string, destination: string): void {
@@ -96,14 +96,14 @@ export function validateRoute(origin: string, destination: string): void {
 
 export async function collectMonth(month: string, headless = false, options: CollectionOptions = {}) {
   validateFutureMonth(month);
-  const { origin = 'ICN', destination = 'JFK', captureArtifacts = true, offscreen = false } = options;
+  const { origin = 'ICN', destination = 'JFK', captureArtifacts = true } = options;
   validateRoute(origin, destination);
-  const browser = await chromium.launch({
-    channel: 'chrome', headless,
-    args: offscreen && !headless ? ['--window-position=-8000,-8000', '--window-size=1440,1100'] : [],
-  });
+  const browser = await chromium.launch({ channel: 'chrome', headless });
   const context = await browser.newContext({
     locale: 'ko-KR', timezoneId: 'Asia/Seoul', viewport: { width: 1440, height: 1100 },
+    // Chrome's own headless user agent is refused by the airline edge with an HTTP2
+    // error. The window is what stays hidden; the browser identifies itself normally.
+    ...(headless ? { userAgent: HEADLESS_USER_AGENT } : {}),
   });
   const page = await context.newPage();
   page.setDefaultTimeout(15_000);

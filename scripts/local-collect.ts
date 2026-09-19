@@ -20,9 +20,8 @@ try {
   if (values.size !== accepted.size) {
     throw new CollectionError('INVALID_ARGUMENTS', '출발 공항, 도착 공항, 조회 월이 필요합니다.');
   }
-  const result = await collectMonth(values.get('--month')!, false, {
+  const result = await collectMonth(values.get('--month')!, hidden, {
     origin: values.get('--origin')!, destination: values.get('--destination')!, captureArtifacts: false,
-    offscreen: hidden,
   });
   process.stdout.write(JSON.stringify({ calendar: result.data }) + '\n');
 } catch (error) {
