@@ -45,14 +45,27 @@ jobs:
         run: |
           git config user.name "business-scan-bot"
           git config user.email "actions@users.noreply.github.com"
-          # A scan runs for a long while, so main usually moved meanwhile. The run's
-          # own results are the newer truth for this file, so rebuild the commit on
-          # top of whatever main is now instead of rebasing into a conflict.
+          # A scan runs for a long while, so main usually moved meanwhile — often
+          # past the commit this runner checked out. Only the result files are this
+          # run's to publish; everything else must stay exactly as main has it.
+          # (A soft reset would have kept the stale checkout staged and committed it
+          #  as a revert of whatever landed during the scan.)
+          mkdir -p /tmp/scan-results
+          cp public-data/business-hits.json /tmp/scan-results/ 2>/dev/null || true
+          cp public-data/unsupported-routes.json /tmp/scan-results/ 2>/dev/null || true
           for attempt in 1 2 3; do
             git fetch origin main
-            git reset --soft origin/main
-            git add public-data/business-hits.json
+            git reset --hard origin/main
+            cp /tmp/scan-results/*.json public-data/ 2>/dev/null || true
+            git add public-data/business-hits.json public-data/unsupported-routes.json
             git diff --cached --quiet && exit 0
+            # Nothing outside public-data/ may ever be part of this commit.
+            outside=$(git diff --cached --name-only | grep -v '^public-data/' || true)
+            if [ -n "$outside" ]; then
+              echo "refusing to commit files outside public-data/:"
+              echo "$outside"
+              exit 1
+            fi
             git commit -m "chore: update business seat scan results"
             git push origin HEAD:main && exit 0
             sleep 5
