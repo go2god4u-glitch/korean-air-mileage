@@ -40,6 +40,74 @@ ACCOUNT_PAGES = {
 }
 
 
+def booking_url(payload):
+    """Builds the airline's own award-booking entry for one found date.
+
+    Korean Air accepts the route and date as query parameters; Asiana publishes no
+    such deep link, so its mileage booking page is opened as-is and the screen tells
+    the user what to type. Both require the airline's login, which lives in the
+    user's regular Chrome — never here."""
+    if not isinstance(payload, dict):
+        raise AppError("INVALID_INPUT", "예매 정보를 확인해 주세요.")
+    program = payload.get("program")
+    if program not in BUSINESS_SCAN_PROGRAMS:
+        raise AppError("INVALID_INPUT", "항공사를 확인해 주세요.")
+    origin, destination = (str(payload.get(field, "")).strip().upper() for field in ("origin", "destination"))
+    for code in (origin, destination):
+        if not re.fullmatch(r"[A-Z]{3}", code):
+            raise AppError("INVALID_AIRPORT", "공항 코드를 확인해 주세요.")
+    if origin == destination:
+        raise AppError("SAME_AIRPORT", "출발지와 도착지를 다르게 선택해 주세요.")
+    value = payload.get("date")
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise AppError("INVALID_DATE", "날짜를 확인해 주세요.")
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise AppError("INVALID_DATE", "날짜를 올바르게 선택해 주세요.")
+
+    if program == "korean-air":
+        url = ("https://www.koreanair.com/booking/search?bookingType=A&tripType=OW"
+               "&departureAirportCode=%s&arrivalAirportCode=%s&departureDate=%s&adultCount=1"
+               % (origin, destination, value.replace("-", "")))
+        prefilled = True
+    else:
+        url = "https://flyasiana.com/C/KR/KO/contents/book-online?tabId=mileage"
+        prefilled = False
+    return {"url": url, "program": program, "origin": origin,
+            "destination": destination, "date": value, "prefilled": prefilled}
+
+
+def open_in_chrome(url):
+    """Opens an allowlisted airline page in the user's regular Chrome, where their
+    airline login already lives. This app never sees or stores those credentials."""
+    host = urlparse(url).hostname or ""
+    if host not in ("www.koreanair.com", "flyasiana.com"):
+        raise AppError("INVALID_INPUT", "허용되지 않은 주소예요.")
+    if sys.platform == "darwin":
+        command = ["open", "-a", "Google Chrome", url]
+    elif sys.platform == "win32":
+        candidates = [Path(os.environ.get(base, "")) / "Google/Chrome/Application/chrome.exe"
+                      for base in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")
+                      if os.environ.get(base)]
+        chrome = shutil.which("chrome") or next((str(p) for p in candidates if p.is_file()), None)
+        command = [chrome, url] if chrome else None
+    else:
+        chrome = shutil.which("google-chrome") or shutil.which("google-chrome-stable") or shutil.which("chromium")
+        command = [chrome, url] if chrome else None
+    if not command:
+        raise AppError("CHROME_NOT_FOUND", "Google Chrome을 설치한 뒤 다시 눌러 주세요.", 503)
+    try:
+        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            if process.wait(timeout=0.5) != 0:
+                raise OSError("Chrome launch failed")
+        except subprocess.TimeoutExpired:
+            pass  # Chrome stays open on Windows/Linux.
+    except OSError:
+        raise AppError("CHROME_OPEN_FAILED", "Chrome을 열지 못했어요. 설치 상태를 확인해 주세요.", 503)
+
+
 def open_account_page(payload):
     """Open an allowlisted official page in the user's regular Chrome profile."""
     program = payload.get("program") if isinstance(payload, dict) else None
@@ -1230,7 +1298,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.allowed(mutation=True)
             if self.path not in ("/api/search", "/api/business-scan", "/api/business-scan/cancel",
-                                 "/api/watches/save", "/api/watches/delete", "/api/watches/sync", "/api/open-airline", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
+                                 "/api/watches/save", "/api/watches/delete", "/api/watches/sync",
+                                 "/api/open-booking", "/api/open-airline", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
                 raise AppError("NOT_FOUND", "요청한 기능을 찾을 수 없어요.", 404)
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
                 raise AppError("INVALID_INPUT", "검색 조건을 확인해 주세요.", 415)
@@ -1266,6 +1335,11 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/business-scan":
                 self.respond({"jobId": self.server.business_scan_service.start(payload)}, 202)
+                return
+            if self.path == "/api/open-booking":
+                booking = booking_url(payload)
+                open_in_chrome(booking["url"])
+                self.respond(booking)
                 return
             if self.path == "/api/watches/save":
                 watch = validate_watch(payload)

@@ -72,7 +72,11 @@
     } catch {
       throw new Error('결과를 불러오지 못했어요.');
     }
-    if (!response.ok) throw new Error(data.error?.message || '요청을 처리하지 못했어요.');
+    if (!response.ok) {
+      const failure = new Error(data.error?.message || '요청을 처리하지 못했어요.');
+      failure.code = data.error?.code;
+      throw failure;
+    }
     return data;
   }
 
@@ -237,6 +241,25 @@
     $('scan-button').disabled = running || !regionCodes.size || !picked.programs.length;
   }
 
+  /** Hands the date to the airline's own booking page, opened in the user's
+   *  regular Chrome so their airline login applies. */
+  async function openBooking(hit, program, origin, destination) {
+    try {
+      const result = await api('/api/open-booking', {
+        method: 'POST',
+        body: JSON.stringify({ program, origin, destination, date: hit.date }),
+      });
+      const airline = programNames[program] || program;
+      const route = `${origin}→${destination} ${hit.date}`;
+      setStatus(result.prefilled
+        ? `${airline} 예매 화면을 열었어요 (${route}). 로그인이 안 되어 있으면 로그인 화면이 먼저 나와요 — 로그인한 뒤 이 날짜를 다시 눌러 주세요.`
+        : `${airline} 마일리지 예매 화면을 열었어요. ${route} 조건을 직접 입력해 주세요. 아시아나는 노선·날짜를 주소로 전달할 수 없어요.`,
+        'success');
+    } catch (error) {
+      setStatus(error.message, 'error');
+    }
+  }
+
   function renderHits(job) {
     const results = $('scan-results');
     results.replaceChildren();
@@ -291,10 +314,15 @@
       }
       const grid = node('div', 'date-grid');
       for (const hit of routeHits.sort((a, b) => a.date.localeCompare(b.date))) {
-        const card = node('div', 'date-card');
+        const card = node('button', 'date-card');
+        card.type = 'button';
+        card.setAttribute('aria-label',
+          `${hit.date} ${origin}→${destination} ${first ? '일등석' : '비즈니스'} 예매 화면 열기`);
         card.append(node('span', 'date-top', prettyDate(hit.date).replace(/\s\(.*\)$/, '')),
           node('span', 'date-number', String(Number(hit.date.slice(8, 10)))),
-          node('span', 'date-badge' + (first ? ' first-badge' : ''), first ? '일등석' : '비즈니스'));
+          node('span', 'date-badge' + (first ? ' first-badge' : ''), first ? '일등석' : '비즈니스'),
+          node('span', 'date-go', '예매하기 ↗'));
+        card.addEventListener('click', () => void openBooking(hit, program, origin, destination));
         grid.append(card);
       }
       panel.append(grid);
@@ -340,8 +368,21 @@
       $('scan-failures').textContent = notes.join(' · ');
       updateEstimate();
     } catch (error) {
-      // The search itself keeps running in the background, so a dropped poll —
-      // a restarted server, a moment of load — must not throw the run away.
+      // A job the server no longer knows is gone for good — it died with the
+      // process that held it. Retrying cannot bring it back, so say so plainly.
+      if (error.code === 'JOB_NOT_FOUND') {
+        clearInterval(polling);
+        polling = null;
+        running = false;
+        currentJobId = null;
+        $('scan-cancel').hidden = true;
+        $('scan-button').textContent = '비즈니스석 검색';
+        setStatus('조회 프로그램이 다시 시작되어 이번 조회는 중단됐어요. 검색을 다시 눌러 주세요.', 'error');
+        updateEstimate();
+        return;
+      }
+      // A dropped connection is different: the sweep is still running, so a
+      // brief outage must not throw it away.
       pollFailures += 1;
       if (pollFailures < 8) {
         setStatus(`조회 상태를 확인하지 못했어요. 다시 시도하고 있어요… (${pollFailures}/8)`, 'busy');
