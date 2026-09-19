@@ -65,21 +65,79 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function notifyTelegram(text: string): Promise<void> {
+const TELEGRAM_LIMIT = 3800; // Telegram caps a message at 4096 characters.
+
+async function sendTelegram(text: string): Promise<boolean> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
   if (!token || !chatId) {
     console.log('[business-scan] TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not set; skipping notification.');
-    return;
+    return false;
   }
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
-  });
-  if (!response.ok) {
-    console.error('[business-scan] Telegram notify failed:', response.status, await response.text().catch(() => ''));
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+    });
+    if (response.ok) return true;
+    const body = await response.text().catch(() => '');
+    if (response.status === 429) {
+      const retryAfter = Number(JSON.parse(body || '{}')?.parameters?.retry_after) || 5;
+      console.log(`[business-scan] Telegram rate limited; waiting ${retryAfter}s`);
+      await sleep((retryAfter + 1) * 1000);
+      continue;
+    }
+    console.error('[business-scan] Telegram notify failed:', response.status, body);
+    return false;
   }
+  return false;
+}
+
+/** Splits on whole lines so a route's dates are never cut mid-line, then sends
+ *  every part — a long list arrives in sequence instead of being truncated. */
+async function notifyTelegram(header: string, blocks: string[]): Promise<void> {
+  const parts: string[] = [];
+  let current = '';
+  for (const block of blocks) {
+    if (current && current.length + block.length + 2 > TELEGRAM_LIMIT) {
+      parts.push(current);
+      current = '';
+    }
+    current = current ? `${current}\n\n${block}` : block;
+  }
+  if (current) parts.push(current);
+  if (!parts.length) parts.push('(내용 없음)');
+  for (const [index, part] of parts.entries()) {
+    const label = parts.length > 1 ? `${header} (${index + 1}/${parts.length})` : header;
+    const sent = await sendTelegram(`${label}\n\n${part}`);
+    if (!sent) return;
+    if (index < parts.length - 1) await sleep(1200);
+  }
+  console.log(`[business-scan] Telegram: ${parts.length} message(s) sent.`);
+}
+
+/** One block per route, with dates folded by month so a long list stays readable. */
+function hitBlocks(hits: Hit[]): string[] {
+  const byRoute = new Map<string, Hit[]>();
+  for (const hit of hits) {
+    const key = `${hit.origin}→${hit.destination} ${hit.destinationName}`;
+    if (!byRoute.has(key)) byRoute.set(key, []);
+    byRoute.get(key)!.push(hit);
+  }
+  return [...byRoute.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([route, routeHits]) => {
+      const byMonth = new Map<string, number[]>();
+      for (const hit of routeHits.sort((a, b) => a.date.localeCompare(b.date))) {
+        const month = hit.date.slice(0, 7);
+        if (!byMonth.has(month)) byMonth.set(month, []);
+        byMonth.get(month)!.push(Number(hit.date.slice(8, 10)));
+      }
+      const lines = [...byMonth.entries()].map(([month, days]) =>
+        `  ${Number(month.slice(5, 7))}월: ${days.join(', ')}일`);
+      return `✈️ ${route} — ${routeHits.length}일\n${lines.join('\n')}`;
+    });
 }
 
 async function main(): Promise<void> {
@@ -144,16 +202,12 @@ async function main(): Promise<void> {
   for (const f of failures) console.log(`[business-scan] failed ${origin}-${f.destination} ${f.month}: ${f.code}`);
 
   if (newHits.length) {
-    const lines = newHits
-      .sort((a, b) => a.date.localeCompare(b.date))
-      .slice(0, 30)
-      .map((h) => `- ${h.origin}→${h.destination} (${h.destinationName}) ${h.date}`)
-      .join('\n');
-    const more = newHits.length > 30 ? `\n...외 ${newHits.length - 30}건` : '';
-    await notifyTelegram(`✈️ 새 비즈니스 마일리지 좌석 발견 (${newHits.length}건)\n${lines}${more}\n\n직접 확인: ${SOURCE_URL}`);
+    await notifyTelegram(`✈️ 새 비즈니스 마일리지 좌석 ${newHits.length}건`,
+      [...hitBlocks(newHits), `직접 확인: ${SOURCE_URL}`]);
   }
   if (stoppedEarly) {
-    await notifyTelegram(`⚠️ 대한항공이 조회를 제한해 자동 스캔을 멈췄어요 (${stopReason}). 다음 스케줄에서 다시 시도해요.`);
+    await notifyTelegram('⚠️ 자동 스캔 중단',
+      [`대한항공이 조회를 제한해 스캔을 멈췄어요 (${stopReason}). 다음 스케줄에서 다시 시도해요.`]);
     process.exitCode = 1;
   }
 }
