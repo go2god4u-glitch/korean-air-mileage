@@ -1090,7 +1090,12 @@ class BusinessScanService:
             if row.get("firstAwardOrUpgrade"):
                 cabins.append("first")
             if cabins:
-                found.append({"date": row["date"], "cabins": cabins})
+                # The airline's own reference time travels with the finding: it is
+                # hours older than our read, and treating our read as the truth is
+                # what makes a seat look live when it is a daily snapshot.
+                found.append({"date": row["date"], "cabins": cabins,
+                              "sourceUpdatedAt": value.get("sourceUpdatedAt"),
+                              "collectedAt": value.get("collectedAt")})
         return found
 
     def _collect_asiana(self, leg):
@@ -1115,7 +1120,8 @@ class BusinessScanService:
                                     else "아시아나에서 접속을 제한했어요.")
                 days = job.get("legs", [{}])[0].get("days", [])
                 # Asiana's public calendar publishes economy and business only.
-                return [{"date": day["date"], "cabins": ["prestige"]}
+                return [{"date": day["date"], "cabins": ["prestige"],
+                         "sourceUpdatedAt": day.get("sourceAt"), "collectedAt": day.get("observedAt")}
                         for day in days if "business" in (day.get("cabins") or [])]
         raise AppError("COLLECTION_TIMEOUT", "아시아나 조회가 오래 걸려 중단했어요.")
 
@@ -1179,7 +1185,9 @@ class BusinessScanService:
                     for found in dates:
                         hits.append({"program": program, "origin": leg["origin"], "destination": leg["destination"],
                                      "month": leg["month"], "date": found["date"],
-                                     "cabins": found["cabins"], "foundAt": found_at})
+                                     "cabins": found["cabins"], "foundAt": found_at,
+                                     "sourceUpdatedAt": found.get("sourceUpdatedAt"),
+                                     "collectedAt": found.get("collectedAt")})
                     completed += 1
                     self.update(job_id, completed=completed, hits=list(hits))
             self.update(job_id, status="complete", progress=100,

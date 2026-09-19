@@ -85,10 +85,18 @@
     return year && month ? `${year}년 ${Number(month)}월` : value;
   }
 
+  /** The year is part of the date: results now span two of them, and "9월 14일"
+   *  alone sent someone looking in the wrong year. */
   function prettyDate(value) {
     const parsed = new Date(value + 'T12:00:00+09:00');
     return Number.isNaN(parsed.getTime()) ? value
-      : new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'long', day: 'numeric', weekday: 'short' }).format(parsed);
+      : new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(parsed);
+  }
+
+  function stamp(value) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? '확인 불가'
+      : new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(parsed);
   }
 
   function airportName(code) {
@@ -255,7 +263,7 @@
    *  regular Chrome so their airline login applies. */
   async function openBooking(hit, program, origin, destination, card) {
     const airline = programNames[program] || program;
-    const route = `${origin}→${destination} ${hit.date}`;
+    const route = `${origin}→${destination} ${prettyDate(hit.date)}`;
     setBookingNotice(`${airline} 예매 화면을 여는 중이에요… (${route})`, 'busy');
     try {
       const result = await api('/api/open-booking', {
@@ -264,9 +272,12 @@
       });
       for (const opened of document.querySelectorAll('.date-card.opened')) opened.classList.remove('opened');
       card?.classList.add('opened');
-      setBookingNotice(result.prefilled
+      const stale = hit.sourceUpdatedAt
+        ? ` 이 표시는 ${airline}이 ${stamp(hit.sourceUpdatedAt)}에 공개한 현황이라, 그 뒤에 팔렸으면 예매 화면에는 없을 수 있어요.`
+        : ' 공개 현황은 실시간이 아니라, 그 뒤에 팔렸으면 예매 화면에는 없을 수 있어요.';
+      setBookingNotice((result.prefilled
         ? `${airline} 예매 화면을 Chrome에 열었어요 (${route}). 창이 안 보이면 Chrome을 확인해 주세요. 로그인 전이면 로그인 화면이 먼저 나오니, 로그인한 뒤 이 날짜를 다시 눌러 주세요.`
-        : `${airline} 마일리지 예매 화면을 Chrome에 열었어요. ${route} 조건을 직접 입력해 주세요 — 아시아나는 노선·날짜를 주소로 전달할 수 없어요.`);
+        : `${airline} 마일리지 예매 화면을 Chrome에 열었어요. ${route} 조건을 직접 입력해 주세요 — 아시아나는 노선·날짜를 주소로 전달할 수 없어요.`) + stale);
     } catch (error) {
       setBookingNotice(error.message, 'error');
     }
@@ -318,8 +329,15 @@
         node('div', 'count-label', '좌석 표시가 있는 날짜'));
       top.append(detail, count);
       panel.append(top);
-      const foundAt = routeHits[0]?.foundAt;
-      if (foundAt) panel.append(node('p', 'coverage-note', `${clockTime(foundAt)}에 확인했어요`));
+      // The airline's reference time is the one that matters. Ours only says when
+      // we read their daily snapshot, and showing it alone reads as "live".
+      const sample = routeHits[0] ?? {};
+      const notes = [];
+      if (sample.sourceUpdatedAt) notes.push(`대한항공 공개 기준 ${stamp(sample.sourceUpdatedAt)}`);
+      if (sample.collectedAt ?? sample.foundAt) notes.push(`가져온 시각 ${stamp(sample.collectedAt ?? sample.foundAt)}`);
+      if (notes.length) {
+        panel.append(node('p', 'coverage-note', `${notes.join(' · ')} — 실시간 잔여석이 아니에요`));
+      }
       if (first) {
         panel.append(node('p', 'coverage-note result-warning',
           '대한항공은 일등석 보너스와 좌석승급을 한 표시로 묶어서 공개해요. 둘 중 어느 쪽인지는 대한항공 화면에서 확인해 주세요.'));
@@ -330,7 +348,7 @@
         card.type = 'button';
         card.setAttribute('aria-label',
           `${hit.date} ${origin}→${destination} ${first ? '일등석' : '비즈니스'} 예매 화면 열기`);
-        card.append(node('span', 'date-top', prettyDate(hit.date).replace(/\s\(.*\)$/, '')),
+        card.append(node('span', 'date-top', `${hit.date.slice(0, 4)}년 ${Number(hit.date.slice(5, 7))}월`),
           node('span', 'date-number', String(Number(hit.date.slice(8, 10)))),
           node('span', 'date-badge' + (first ? ' first-badge' : ''), first ? '일등석' : '비즈니스'),
           node('span', 'date-go', '예매하기 ↗'));
