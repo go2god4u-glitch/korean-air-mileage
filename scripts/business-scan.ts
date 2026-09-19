@@ -1,11 +1,35 @@
-// Unattended sweep of the Korean Air public bonus-seat calendar across a curated
-// destination list, looking only for prestige (business) award seats. Meant to run
-// on a schedule (GitHub Actions), never interactively. One call per
-// origin/destination/month, same as the interactive collector — no retries, no
-// concurrency, and an immediate stop on any access restriction.
-//
-// Runs fully headless: the airline edge only refuses Chrome's own headless user
-// agent, which the collector overrides, so no browser window is ever created.
+/**
+ * 작전일지 — 무인 척후병(斥候兵)
+ *
+ * 승상께서 이르시기를, "장수가 몸소 성문마다 다닐 수는 없는 법. 척후를 풀어
+ * 성문이 열리는 때를 알려오게 하라" 하셨다. 이 파일이 그 척후다. 매시 17분,
+ * 깃허브의 땅에서 홀로 깨어나 신청된 노선을 돌며 비즈니스·일등석 자리를 살피고,
+ * 새로 열린 자리가 있으면 텔레그램으로 파발을 띄운다.
+ *
+ * 세 번의 패퇴가 있었고, 세 가지를 배웠다.
+ *
+ * 첫째, 적은 무형(無形)을 막는 것이 아니라 이름을 본다. 창 없는 정찰이 막히기에
+ * 창을 화면 밖으로 밀어내는 잔꾀까지 썼으나, 실은 제 이름표에 'Headless'라
+ * 적혀 있던 탓이었다. 이름만 고쳐 다니 성문이 순순히 열렸다.
+ *
+ * 둘째, 성문 둘은 각기 다른 파수를 둔다. 대한항공은 이름만 보았으나 아시아나는
+ * 그 자가 사람인지(webdriver) 또한 물었다. 우리가 직접 수레를 몰고 가
+ * 뒤에서 붙는 계책으로 이를 넘었다. 다만 아시아나는 구름 위(클라우드)에서 온
+ * 자를 아예 들이지 않으니, 그 길은 내 집에서만 통한다.
+ *
+ * 셋째, 돌아오지 않는 척후는 죽은 척후만 못하다. 소임을 마치고도 수레를
+ * 물리지 않아 사십오 분을 길에 선 채 굳은 일이 있었다. 이제는 반드시
+ * 수레까지 거두고 물러난다(main().finally).
+ *
+ * 한 가지를 끝내 지킨다. **모르는 것을 '없다'고 아뢰지 않는다.** 조회에 실패한
+ * 구간, 아직 예약이 열리지 않은 날, 취항하지 않는 노선은 저마다 다른 말이며,
+ * 그 어느 것도 "자리가 없다"가 아니다. 없는 소식을 지어 올리는 척후는 없느니만 못하다.
+ *
+ * 길잡이
+ *   - 증상별 진단 : TROUBLESHOOTING_AWARD_SCAN.md
+ *   - 구조 해부   : AWARD_SCAN_ARCHITECTURE.md
+ *   - 외부 자원   : AWARD_SCAN_INTELLIGENCE.md
+ */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
