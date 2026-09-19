@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-19T13:34:13.026Z",
+  "updatedAt": "2026-09-19T16:52:23.436Z",
   "hits": [
     {
       "watchId": "default",
@@ -8,8 +8,8 @@
       "destination": "CDG",
       "destinationName": "파리",
       "date": "2027-09-14",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T13:14:33.968Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:34:24.244Z",
       "cabin": "prestige"
     },
     {
@@ -19,8 +19,8 @@
       "destination": "CDG",
       "destinationName": "파리",
       "date": "2027-09-14",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T13:14:33.968Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:34:24.244Z",
       "cabin": "first"
     },
     {
@@ -30,8 +30,8 @@
       "destination": "LHR",
       "destinationName": "런던",
       "date": "2027-09-14",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T08:54:11.347Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:36:24.285Z",
       "cabin": "prestige"
     },
     {
@@ -41,8 +41,8 @@
       "destination": "LHR",
       "destinationName": "런던",
       "date": "2027-09-14",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T08:54:11.347Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:36:24.285Z",
       "cabin": "first"
     },
     {
@@ -52,8 +52,8 @@
       "destination": "MAD",
       "destinationName": "마드리드",
       "date": "2027-09-14",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T09:04:12.964Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:46:20.445Z",
       "cabin": "prestige"
     },
     {
@@ -63,8 +63,8 @@
       "destination": "JFK",
       "destinationName": "뉴욕",
       "date": "2027-09-14",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T09:06:15.939Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:48:19.308Z",
       "cabin": "prestige"
     },
     {
@@ -74,8 +74,8 @@
       "destination": "LAX",
       "destinationName": "로스앤젤레스",
       "date": "2026-10-10",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T09:06:26.060Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:48:29.258Z",
       "cabin": "prestige"
     },
     {
@@ -85,8 +85,8 @@
       "destination": "LAX",
       "destinationName": "로스앤젤레스",
       "date": "2027-09-14",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T09:08:16.828Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:50:19.704Z",
       "cabin": "prestige"
     },
     {
@@ -96,8 +96,8 @@
       "destination": "SFO",
       "destinationName": "샌프란시스코",
       "date": "2027-08-03",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T09:10:08.471Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:52:09.185Z",
       "cabin": "prestige"
     },
     {
@@ -107,8 +107,8 @@
       "destination": "SFO",
       "destinationName": "샌프란시스코",
       "date": "2027-09-14",
-      "sourceUpdatedAt": "2026-09-18T23:00:00+09:00",
-      "collectedAt": "2026-09-19T09:10:18.530Z",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-19T16:52:19.331Z",
       "cabin": "prestige"
     }
   ]
