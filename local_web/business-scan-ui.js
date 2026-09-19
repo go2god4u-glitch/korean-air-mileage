@@ -241,22 +241,34 @@
     $('scan-button').disabled = running || !regionCodes.size || !picked.programs.length;
   }
 
+  /** Its own notice, not the scan status line: a running sweep overwrites that
+   *  on the next poll and the confirmation would vanish as the user read it. */
+  function setBookingNotice(message, kind = 'success') {
+    const box = $('booking-notice');
+    box.hidden = false;
+    box.dataset.kind = kind;
+    $('booking-notice-text').textContent = message;
+    box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
   /** Hands the date to the airline's own booking page, opened in the user's
    *  regular Chrome so their airline login applies. */
-  async function openBooking(hit, program, origin, destination) {
+  async function openBooking(hit, program, origin, destination, card) {
+    const airline = programNames[program] || program;
+    const route = `${origin}→${destination} ${hit.date}`;
+    setBookingNotice(`${airline} 예매 화면을 여는 중이에요… (${route})`, 'busy');
     try {
       const result = await api('/api/open-booking', {
         method: 'POST',
         body: JSON.stringify({ program, origin, destination, date: hit.date }),
       });
-      const airline = programNames[program] || program;
-      const route = `${origin}→${destination} ${hit.date}`;
-      setStatus(result.prefilled
-        ? `${airline} 예매 화면을 열었어요 (${route}). 로그인이 안 되어 있으면 로그인 화면이 먼저 나와요 — 로그인한 뒤 이 날짜를 다시 눌러 주세요.`
-        : `${airline} 마일리지 예매 화면을 열었어요. ${route} 조건을 직접 입력해 주세요. 아시아나는 노선·날짜를 주소로 전달할 수 없어요.`,
-        'success');
+      for (const opened of document.querySelectorAll('.date-card.opened')) opened.classList.remove('opened');
+      card?.classList.add('opened');
+      setBookingNotice(result.prefilled
+        ? `${airline} 예매 화면을 Chrome에 열었어요 (${route}). 창이 안 보이면 Chrome을 확인해 주세요. 로그인 전이면 로그인 화면이 먼저 나오니, 로그인한 뒤 이 날짜를 다시 눌러 주세요.`
+        : `${airline} 마일리지 예매 화면을 Chrome에 열었어요. ${route} 조건을 직접 입력해 주세요 — 아시아나는 노선·날짜를 주소로 전달할 수 없어요.`);
     } catch (error) {
-      setStatus(error.message, 'error');
+      setBookingNotice(error.message, 'error');
     }
   }
 
@@ -322,7 +334,7 @@
           node('span', 'date-number', String(Number(hit.date.slice(8, 10)))),
           node('span', 'date-badge' + (first ? ' first-badge' : ''), first ? '일등석' : '비즈니스'),
           node('span', 'date-go', '예매하기 ↗'));
-        card.addEventListener('click', () => void openBooking(hit, program, origin, destination));
+        card.addEventListener('click', () => void openBooking(hit, program, origin, destination, card));
         grid.append(card);
       }
       panel.append(grid);
