@@ -1154,7 +1154,15 @@ class BusinessScanService:
                 continue
             self.update(job_id, message="실시간 확인 중이에요 · %s→%s %s" % (
                 hit["origin"], hit["destination"], hit["date"]))
-            cabin = "first" if "first" in hit.get("cabins", []) else "business"
+            # A finding names one cabin. Silently picking one of several is how a
+            # first-class answer once got shown as an available business seat, so
+            # an ambiguous finding is left unchecked instead of guessed at.
+            cabins = hit.get("cabins") or []
+            if len(cabins) != 1:
+                hit["live"], hit["liveCode"] = "unchecked", "AMBIGUOUS_CABIN"
+                self.update(job_id, hits=list(hits))
+                continue
+            cabin = "first" if cabins[0] == "first" else "business"
             try:
                 result = self.award.worker.call(
                     "verify", {"origin": hit["origin"], "destination": hit["destination"],

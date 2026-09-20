@@ -1213,5 +1213,59 @@ class HttpBoundaryTests(unittest.TestCase):
             start.assert_not_called()
 
 
+class LiveVerificationCabinTests(unittest.TestCase):
+    """A finding must name exactly one cabin.
+
+    A day offering both business and first once became a single finding, so the
+    live check ran for first class alone and its answer — 120,000 miles — was
+    shown as an available business seat while business was 매진."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.service = app.SearchService(app.CalendarStore(self.root))
+        self.scan = app.BusinessScanService(self.service, mock.Mock(), self.root)
+        self.leg = app.legs_for(PARAMS)[0]
+
+    def calendar_with(self, **markers):
+        value = synthetic_calendar(self.leg)
+        for row in value["dates"]:
+            row.update(markers)
+        return value
+
+    def test_a_day_offering_both_cabins_becomes_one_finding_per_cabin(self):
+        both = self.calendar_with(prestigeAward=True, firstAwardOrUpgrade=True)
+        with mock.patch.object(self.service.store, "read", return_value=both), \
+                mock.patch.object(self.service.store, "stale", return_value=False):
+            found = self.scan._collect_korean_air(self.leg)
+        self.assertTrue(found)
+        for entry in found:
+            self.assertEqual(len(entry["cabins"]), 1,
+                             "a finding must carry one cabin so it is verified as itself")
+        by_date = {}
+        for entry in found:
+            by_date.setdefault(entry["date"], set()).add(entry["cabins"][0])
+        for date, cabins in by_date.items():
+            self.assertEqual(cabins, {"prestige", "first"}, "both cabins must survive as separate findings on " + date)
+
+    def test_a_day_offering_one_cabin_yields_only_that_cabin(self):
+        for markers, expected in (({"prestigeAward": True, "firstAwardOrUpgrade": False}, "prestige"),
+                                  ({"prestigeAward": False, "firstAwardOrUpgrade": True}, "first")):
+            with self.subTest(expected=expected):
+                value = self.calendar_with(**markers)
+                with mock.patch.object(self.service.store, "read", return_value=value), \
+                        mock.patch.object(self.service.store, "stale", return_value=False):
+                    found = self.scan._collect_korean_air(self.leg)
+                self.assertTrue(found)
+                self.assertEqual({entry["cabins"][0] for entry in found}, {expected})
+
+    def test_a_day_offering_neither_cabin_is_not_reported(self):
+        empty = self.calendar_with(prestigeAward=False, firstAwardOrUpgrade=False)
+        with mock.patch.object(self.service.store, "read", return_value=empty), \
+                mock.patch.object(self.service.store, "stale", return_value=False):
+            self.assertEqual(self.scan._collect_korean_air(self.leg), [])
+
+
 if __name__ == "__main__":
     unittest.main()
