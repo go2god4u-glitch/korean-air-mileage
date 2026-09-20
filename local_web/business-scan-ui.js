@@ -499,20 +499,22 @@
   function showTab(name) {
     $('scan-tab-panel').hidden = name !== 'scan';
     $('watch-tab-panel').hidden = name !== 'watch';
+    $('release-tab-panel').hidden = name !== 'release';
     for (const section of ['search-section', 'award-area', 'results-area']) {
       const element = document.getElementById(section);
       if (element) element.hidden = name !== 'single' || element.dataset.hiddenByProgram === 'true';
     }
-    for (const [id, tab] of [['tab-single', 'single'], ['tab-scan', 'scan'], ['tab-watch', 'watch']]) {
+    for (const [id, tab] of [['tab-single', 'single'], ['tab-scan', 'scan'], ['tab-watch', 'watch'], ['tab-release', 'release']]) {
       $(id).setAttribute('aria-selected', String(name === tab));
     }
-    if (name === 'watch') window.WatchesUI?.reload();
+    if (name === 'watch' || name === 'release') window.WatchesUI?.reload();
   }
 
   async function init() {
     $('tab-single').addEventListener('click', () => showTab('single'));
     $('tab-scan').addEventListener('click', () => showTab('scan'));
     $('tab-watch').addEventListener('click', () => showTab('watch'));
+    $('tab-release').addEventListener('click', () => showTab('release'));
     $('scan-form').addEventListener('submit', startScan);
     $('scan-cancel').addEventListener('click', cancelScan);
     $('scan-start-month').addEventListener('change', updateEstimate);
