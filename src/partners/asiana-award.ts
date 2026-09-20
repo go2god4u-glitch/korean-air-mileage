@@ -11,7 +11,7 @@
  */
 import type { Page } from 'playwright';
 
-export interface AsianaAwardQuery { origin: string; destination: string; date: string }
+export interface AsianaAwardQuery { origin: string; destination: string; date: string; adults?: number }
 
 const ENTRY_URL = 'https://flyasiana.com/I/KR/KO/RedemptionRegistTravel.do';
 const TYPE_DELAY = 140;
@@ -41,6 +41,20 @@ async function pickAirport(page: Page, field: 'Departure' | 'Arrival', code: str
     throw new Error('ROUTE_UNAVAILABLE');
   }
   await list.first().click();
+  await settle(page);
+}
+
+/** Asiana books both travellers on one reservation, so the search must ask for
+ *  that many seats: a flight with one left is not a flight a couple can take. */
+async function setAdults(page: Page, adults: number): Promise<void> {
+  if (adults <= 1) return;
+  const field = page.locator('#adultCount');
+  try {
+    await field.selectOption(String(adults), { timeout: 5000 });
+  } catch {
+    await field.fill(String(adults)).catch(() => { throw new Error('PASSENGER_UNAVAILABLE'); });
+  }
+  if ((await field.inputValue().catch(() => '')) !== String(adults)) throw new Error('PASSENGER_UNAVAILABLE');
   await settle(page);
 }
 
@@ -159,6 +173,7 @@ export async function prepareAsianaAward(page: Page, query: AsianaAwardQuery, ca
   await pickAirport(page, 'Departure', origin);
   await pickAirport(page, 'Arrival', destination);
   await chooseDate(page, date);
+  await setAdults(page, query.adults ?? 1);
 
   const cabinLink = page.getByRole('link', { name: '비즈니스', exact: true });
   try { await cabinLink.first().click({ timeout: 8000 }); } catch { throw new Error('CABIN_UNAVAILABLE'); }
@@ -185,6 +200,7 @@ export async function searchAsianaAward(page: Page, query: AsianaAwardQuery & { 
     await pickAirport(page, 'Departure', origin);
     await pickAirport(page, 'Arrival', destination);
     await chooseDate(page, date);
+    await setAdults(page, query.adults ?? 1);
 
     // Asiana refuses the search without a cabin ("좌석등급을 선택해주세요"), unlike
     // Korean Air which prices every cabin on the result page.

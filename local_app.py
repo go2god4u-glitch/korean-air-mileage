@@ -379,6 +379,13 @@ def validate_business_scan_request(raw, today=None):
         raise AppError("INVALID_INPUT", "조회할 프로그램을 선택해 주세요.")
     programs = [p for p in BUSINESS_SCAN_PROGRAMS if p in programs]
 
+    try:
+        adults = int(raw.get("adults", 1))
+    except (TypeError, ValueError):
+        raise AppError("INVALID_INPUT", "인원을 확인해 주세요.")
+    if not 1 <= adults <= 4:
+        raise AppError("INVALID_INPUT", "인원은 1~4명으로 선택해 주세요.")
+
     minimum, maximum = month_bounds(today)
     months = business_scan_months(raw.get("startMonth", minimum), raw.get("endMonth", maximum), today)
 
@@ -387,7 +394,8 @@ def validate_business_scan_request(raw, today=None):
         raise AppError("SCAN_TOO_LARGE",
                         "조합이 %d건이라 한 번에 처리하기 어려워요(최대 %d건). 지역이나 기간을 조금 줄여 주세요." % (total, BUSINESS_SCAN_MAX_LEGS))
 
-    return {"origins": origins, "destinations": destinations, "months": months, "programs": programs}
+    return {"origins": origins, "destinations": destinations, "months": months,
+            "programs": programs, "adults": adults}
 
 
 WATCHES_PATH = ROOT / "config" / "watches.json"
@@ -999,6 +1007,9 @@ class BusinessScanService:
         self.last_asiana_at = None
         self.unsupported_path = self.search.store.directory / "unsupported-routes.json"
         self.job_path = self.search.store.directory / "business-scan-job.json"
+        # How many seats a finding must have to be useful. Korean Air publishes no
+        # count, so this only filters Asiana, which does.
+        self.party_size = 1
 
     def read_saved_job(self, job_id):
         """A scan lives in memory, so a restart loses the thread running it. The
@@ -1053,6 +1064,7 @@ class BusinessScanService:
 
     def start(self, raw):
         params = validate_business_scan_request(raw)
+        self.party_size = params["adults"]
         legs = [{"origin": origin, "destination": destination, "month": month}
                 for origin in params["origins"] for destination in params["destinations"] for month in params["months"]]
         with self.search.lock:
@@ -1135,9 +1147,16 @@ class BusinessScanService:
                 for day in days:
                     if "business" not in (day.get("cabins") or []):
                         continue
+                    # Asiana seats a couple on one reservation, so a flight with
+                    # fewer seats than travellers is not a flight they can take.
+                    needed = self.party_size
+                    enough = [f for f in (day.get("flights") or [])
+                              if f.get("cabin") == "business" and (f.get("availableSeatCount") or 0) >= needed]
+                    if needed > 1 and not enough:
+                        continue
                     # Asiana publishes its own per-flight seat count, so the finding
                     # can say which flight and how many seats rather than just "yes".
-                    seats = [f for f in (day.get("flights") or []) if f.get("cabin") == "business"]
+                    seats = enough if needed > 1 else [f for f in (day.get("flights") or []) if f.get("cabin") == "business"]
                     found.append({"date": day["date"], "cabins": ["prestige"],
                                   "sourceUpdatedAt": day.get("sourceAt"), "collectedAt": day.get("observedAt"),
                                   "liveFlights": ["%s %s석" % (f["flightNumber"], f["availableSeatCount"])
@@ -1347,6 +1366,18 @@ def validate_release_request(raw, today=None):
         raise AppError("INVALID_INPUT", "계정 이름은 영문·숫자·하이픈 24자 이내로 지어 주세요.")
     params["account"] = account
     params["label"] = str(raw.get("label", "")).strip()[:40]
+    try:
+        adults = int(raw.get("adults", 1))
+    except (TypeError, ValueError):
+        raise AppError("INVALID_INPUT", "인원을 확인해 주세요.")
+    if not 1 <= adults <= 4:
+        raise AppError("INVALID_INPUT", "인원은 1~4명으로 선택해 주세요.")
+    # Korean Air is booked one traveller per account, so more than one seat on a
+    # single account is not how it is used here.
+    if program == "korean-air" and adults > 1:
+        raise AppError("INVALID_INPUT",
+                       "대한항공은 계정마다 1명씩 잡아요. 두 명이면 계정을 나눠 각각 등록해 주세요.")
+    params["adults"] = adults
 
     today = today or datetime.now(SEOUL).date()
     opens_on = release_date_for(target, program)
@@ -1547,7 +1578,7 @@ class ReleaseWatchService:
             program = params["program"]
             query = {"origin": params["origin"], "destination": params["destination"],
                      "date": params["date"], "cabin": params["cabin"], "hold": True,
-                     "account": params["account"]}
+                     "account": params["account"], "adults": params["adults"]}
             armed = False
             try:
                 tabs = self.tabs_per_watch()

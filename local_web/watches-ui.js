@@ -268,6 +268,13 @@
   /** Asiana publishes economy and business only, so first class is not offered. */
   function syncReleaseCabins() {
     const asiana = $('release-program').value === 'asiana-club';
+    // Korean Air is booked one traveller per account here, so two on one account
+    // is not offered; Asiana puts the couple on a single reservation.
+    const adults = $('release-adults');
+    const two = adults.querySelector('option[value="2"]');
+    two.disabled = !asiana;
+    two.textContent = asiana ? '2명 (한 예약)' : '2명 (계정을 나눠 등록)';
+    if (!asiana && adults.value === '2') adults.value = '1';
     const first = $('release-cabin').querySelector('option[value="first"]');
     first.disabled = asiana;
     first.textContent = asiana ? '일등석 (아시아나 미제공)' : '일등석';
@@ -300,7 +307,8 @@
       const info = node('div');
       const airline = programNames[job.program] || job.program;
       const account = accountNames[job.account] || job.account;
-      info.append(node('strong', null, `${airline} · ${account} · ${job.origin}→${job.destination} ${job.date}`),
+      const party = (job.adults ?? 1) > 1 ? ` · ${job.adults}명` : '';
+      info.append(node('strong', null, `${airline} · ${account}${party} · ${job.origin}→${job.destination} ${job.date}`),
         node('div', 'watch-detail', `${job.opensOn} 오전 9시 · ${job.message}`));
       const detail = (job.flights ?? []).join(' · ');
       if (detail) info.append(node('div', 'date-live ok', detail));
@@ -367,6 +375,7 @@
           cabin: $('release-cabin').value,
           program: $('release-program').value,
           account: $('release-account').value,
+          adults: Number($('release-adults').value) || 1,
         }),
       });
       await loadRelease();
