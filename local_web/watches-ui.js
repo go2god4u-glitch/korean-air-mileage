@@ -275,6 +275,7 @@
   }
 
   const accountNames = { default: '기본', main: '계정 1', second: '계정 2' };
+  let releaseAwake = { supported: false, holding: false };
 
   function releaseKind(status) {
     if (status === 'found') return 'success';
@@ -317,8 +318,10 @@
     }
     $('release-start').disabled = live.length >= 6;
     $('release-status').dataset.kind = live.length ? 'busy' : 'info';
+    const awake = releaseAwake.holding ? ' 대기하는 동안 맥이 잠들지 않게 잡아두고 있어요.'
+      : releaseAwake.supported ? '' : ' (이 시스템에서는 잠들기 방지를 쓸 수 없어요.)';
     $('release-status-text').textContent = live.length
-      ? `${live.length}건 대기 중이에요. 9시에 각각 ${Math.max(1, Math.min(3, Math.floor(6 / live.length)))}개 탭으로 동시에 잡아요.`
+      ? `${live.length}건 대기 중이에요. 9시에 각각 ${Math.max(1, Math.min(3, Math.floor(6 / live.length)))}개 탭으로 동시에 잡아요.${awake}`
       : '타려는 날짜를 넣고 추가해 주세요.';
   }
 
@@ -326,6 +329,7 @@
     try {
       const data = await api('/api/release-watch');
       releaseConfig = { windows: data.windows ?? releaseConfig.windows, releaseHour: data.releaseHour };
+      releaseAwake = data.awake ?? releaseAwake;
       renderRelease(data.jobs ?? (data.job ? [data.job] : []));
       syncReleaseCabins();
       describeRelease();

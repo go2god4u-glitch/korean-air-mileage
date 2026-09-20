@@ -1376,6 +1376,10 @@ class ReleaseWatchService:
     RETRY_TABS = 1
 
     MAX_WATCHES = 6
+    # macOS sleeps on its own, and a sleeping mac misses 09:00 entirely. caffeinate
+    # holds it awake (-i idle, -m disk, -s while on power) only while a standby is
+    # actually waiting, and is released the moment the last one ends.
+    KEEP_AWAKE = sys.platform == "darwin"
     TAB_BUDGET = 6  # Total tabs fired at 09:00 across every standby.
 
     def __init__(self, award_service, root=ROOT):
@@ -1385,6 +1389,28 @@ class ReleaseWatchService:
         self.jobs = {}       # id -> job dict
         self.threads = {}    # id -> Thread
         self.stops = {}      # id -> Event
+        self.awake = None    # caffeinate process, held while any standby waits
+
+    def hold_awake(self):
+        """Keeps the mac from sleeping while a standby waits, and lets it sleep
+        again once none do. Sleeping through 09:00 loses the seat outright."""
+        with self.lock:
+            waiting = any(j.get("status") in ("waiting", "sniping") for j in self.jobs.values())
+            alive = self.awake is not None and self.awake.poll() is None
+            if waiting and not alive and self.KEEP_AWAKE:
+                try:
+                    self.awake = subprocess.Popen(["caffeinate", "-i", "-m", "-s"],
+                                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except OSError:
+                    self.awake = None
+            elif not waiting and alive:
+                self.awake.terminate()
+                self.awake = None
+
+    def awake_state(self):
+        with self.lock:
+            return {"supported": self.KEEP_AWAKE,
+                    "holding": self.awake is not None and self.awake.poll() is None}
 
     def tabs_per_watch(self):
         """Split a fixed tab budget across the live standbys rather than letting
@@ -1463,6 +1489,7 @@ class ReleaseWatchService:
             self.threads[watch_id] = thread
             thread.start()
             job = dict(self.jobs[watch_id])
+        self.hold_awake()
         self.save()
         return job
 
@@ -1476,6 +1503,7 @@ class ReleaseWatchService:
                 job = self.jobs.get(target)
                 if job and job.get("status") in ("waiting", "sniping"):
                     job.update(status="cancelled", message="예매 대기를 멈췄어요.")
+        self.hold_awake()
         self.save()
         return {"status": "cancelled", "cancelled": len(targets)}
 
@@ -1590,6 +1618,9 @@ class ReleaseWatchService:
                             message="9시 이후 %d분 동안 %s 자리를 찾지 못했어요." % (self.GIVE_UP_SECONDS // 60, params["date"]))
         except Exception:
             self.update(watch_id, status="failed", message="예매 대기 중 문제가 생겼어요.")
+        finally:
+            # Let the mac sleep again once this was the last standby waiting.
+            self.hold_awake()
 
     def _notify_text(self, text):
         token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
@@ -1722,6 +1753,7 @@ class Handler(BaseHTTPRequestHandler):
             elif target.path == "/api/release-watch":
                 self.respond({"jobs": self.server.release_watch_service.read_all(),
                               "job": self.server.release_watch_service.read(),
+                              "awake": self.server.release_watch_service.awake_state(),
                               "today": datetime.now(SEOUL).date().isoformat(),
                               "windows": RELEASE_WINDOWS, "releaseHour": RELEASE_HOUR})
             elif target.path == "/api/watches":
