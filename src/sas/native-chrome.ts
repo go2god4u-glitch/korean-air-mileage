@@ -1,5 +1,5 @@
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
@@ -46,23 +46,56 @@ export function chromeArguments(profile: string, port: number, options: {headles
   return [`--user-data-dir=${profile}`, '--remote-debugging-address=127.0.0.1', `--remote-debugging-port=${port}`,
     '--no-first-run', '--no-default-browser-check', ...extra, 'about:blank'];
 }
+/** Reads Chrome's SingletonLock ("host-pid") and ends the instance holding this
+ *  profile — but only after `ps` confirms the pid really is a Chrome started on
+ *  this exact profile, so a recycled pid is never the one that gets killed. */
+export async function releaseProfile(profile: string): Promise<number | null> {
+  let pid: number;
+  try { pid = Number(readlinkSync(join(profile,'SingletonLock')).split('-').pop()); } catch { return null; }
+  if(!Number.isInteger(pid) || pid<=1) return null;
+  try {
+    const command=execFileSync('ps',['-o','command=','-p',String(pid)],{encoding:'utf8'});
+    if(!command.includes(`--user-data-dir=${profile}`)) return null;
+  } catch { return null; }
+  try { process.kill(pid); } catch { return null; }
+  // Chrome only releases the lock once it has finished shutting down; spawning
+  // before that just loses the profile to the instance on its way out.
+  for(let waited=0; waited<4000; waited+=100) {
+    try { process.kill(pid,0); } catch { return pid; }
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  return pid;
+}
 export async function openNativeChrome(profile: string, options:{keepRunning?:boolean;headless?:boolean;userAgent?:string}={}): Promise<{browser:Browser,context:BrowserContext,process:ChildProcess|null,close:()=>Promise<void>}> {
   mkdirSync(profile,{recursive:true});
   const endpointFile=join(profile,'local-debug-endpoint.json');
-  if(options.keepRunning){
-    try{
-      const saved=JSON.parse(readFileSync(endpointFile,'utf8')) as {endpoint:string};
-      const endpoint=new URL(saved.endpoint);
-      if(endpoint.protocol==='ws:'&&endpoint.hostname==='127.0.0.1'){
-        const current=await fetch(`http://127.0.0.1:${endpoint.port}/json/version`,{signal:AbortSignal.timeout(1000)}).then(r=>r.json()) as {webSocketDebuggerUrl?:string};
-        if(current.webSocketDebuggerUrl===saved.endpoint){
-          const browser=await chromium.connectOverCDP(saved.endpoint,{timeout:5000});const context=browser.contexts()[0];
-          if(context)return {browser,context,process:null,close:async()=>{await browser.close().catch(()=>{});}};
-          await browser.close();
-        }
+  const signature=`${options.headless?'headless':'windowed'}|${options.userAgent??''}`;
+  // Chrome refuses to start a second instance on a profile another one holds: it
+  // hands the request over and exits, which reads here as CHROME_OPEN_FAILED. A
+  // worker killed outright leaves exactly such an instance behind, and every
+  // later scan failed against it until the machine was rebooted. So a live
+  // instance on this profile is reused whatever it was started for — with its
+  // pid remembered, since a CDP connection's close() only disconnects.
+  try{
+    const saved=JSON.parse(readFileSync(endpointFile,'utf8')) as {endpoint:string;pid?:number;signature?:string};
+    const endpoint=new URL(saved.endpoint);
+    if(endpoint.protocol==='ws:'&&endpoint.hostname==='127.0.0.1'&&(saved.signature??signature)===signature){
+      const current=await fetch(`http://127.0.0.1:${endpoint.port}/json/version`,{signal:AbortSignal.timeout(1000)}).then(r=>r.json()) as {webSocketDebuggerUrl?:string};
+      if(current.webSocketDebuggerUrl===saved.endpoint){
+        const browser=await chromium.connectOverCDP(saved.endpoint,{timeout:5000});const context=browser.contexts()[0];
+        if(context)return {browser,context,process:null,close:async()=>{
+          await browser.close().catch(()=>{});
+          if(!options.keepRunning&&saved.pid)try{process.kill(saved.pid);}catch{}
+        }};
+        await browser.close();
       }
-    }catch{}
-  }
+    }
+  }catch{}
+  // An instance from before this file was written leaves no endpoint to reuse,
+  // only Chrome's own SingletonLock naming the process that holds the profile.
+  // It is killed rather than worked around: it answers no debugging port, so
+  // nothing can reach it, and while it lives nothing else can start here.
+  await releaseProfile(profile);
   const port=await availablePort();
   const child=spawn(chromeExecutable(),chromeArguments(profile,port,{headless:options.headless,userAgent:options.userAgent}),{stdio:'ignore',windowsHide:false});
   let spawnError=false;child.once('error',()=>{spawnError=true;});
@@ -80,7 +113,7 @@ export async function openNativeChrome(profile: string, options:{keepRunning?:bo
       await new Promise(resolve=>setTimeout(resolve,200));
     }
     if(!endpoint) throw new Error('CHROME_CONNECTION_FAILED');
-    if(options.keepRunning)writeFileSync(endpointFile,JSON.stringify({endpoint}),{mode:0o600});
+    writeFileSync(endpointFile,JSON.stringify({endpoint,pid:child.pid,signature}),{mode:0o600});
     browser=await chromium.connectOverCDP(endpoint,{timeout:10000});
     const context=browser.contexts()[0];
     if(!context) throw new Error('CHROME_CONNECTION_FAILED');

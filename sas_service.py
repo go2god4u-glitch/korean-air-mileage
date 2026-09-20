@@ -57,7 +57,18 @@ class SasWorker:
         cli = self.root / 'node_modules/tsx/dist/cli.mjs'
         if not node or not cli.is_file():
             raise SasError('DEPENDENCIES_MISSING')
-        self.process = subprocess.Popen([node,str(cli),str(self.root/self.script)],cwd=str(self.root),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        # The worker's stderr used to be discarded, so a browser failure reached
+        # the screen as a bare BROWSER_ERROR with nothing behind it to read. It
+        # goes to a file instead: a pipe nobody drains would block the worker.
+        log = self.root / 'data' / 'local' / 'award-worker.log'
+        try:
+            log.parent.mkdir(parents=True, exist_ok=True)
+            errors = open(log, 'ab', buffering=0)
+        except OSError:
+            errors = subprocess.DEVNULL
+        self.process = subprocess.Popen([node,str(cli),str(self.root/self.script)],cwd=str(self.root),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=errors)
+        if errors is not subprocess.DEVNULL:
+            errors.close()
         threading.Thread(target=self._reader,args=(self.process,),daemon=True).start()
 
     def _reader(self, process):
