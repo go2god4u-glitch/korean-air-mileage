@@ -118,7 +118,17 @@ export async function searchKoreanAirAward(page: Page, query: AwardQuery & { hol
     // The result must be about the date we asked for, or it tells us nothing.
     const [, month, day] = date.split('-').map(Number);
     const shown = (await page.locator('body').innerText()).replace(/\s+/gu, ' ');
-    if (!new RegExp(`0?${month}월\\s*0?${day}일`).test(shown)) throw new Error('QUERY_MISMATCH');
+    // The header prints the full date on a wide layout and only the day number on
+    // a narrow one, so the day strip's own 선택됨 marker is the reliable witness.
+    const spelled = new RegExp(`0?${month}월\\s*0?${day}일`).test(shown);
+    const selectedDay = /출발일\s*(\d{1,2})\s*\([월화수목금토일]\)(?:(?!출발일).)*?선택됨/u.exec(shown);
+    const picked = selectedDay ? Number(selectedDay[1]) === day : false;
+    if (!spelled && !picked) {
+      if (process.env.AWARD_DEBUG === '1') {
+        console.error('[ke-award] date not on page:', `${month}월 ${day}일`, '| selected:', selectedDay?.[1], '|', shown.slice(0, 220));
+      }
+      throw new Error('QUERY_MISMATCH');
+    }
 
     const offers = hasFlights
       ? parseCabinOffers(await page.locator(CABIN_LABEL_SELECTOR).evaluateAll((nodes) => nodes.map((n) => n.textContent ?? '')))
@@ -132,9 +142,10 @@ export async function searchKoreanAirAward(page: Page, query: AwardQuery & { hol
     let held = false;
     if (query.hold && bookable.length) {
       const index = offers.findIndex((offer) => offer === bookable[0]);
-      const radio = page.locator(`input[id^="flight-bonus"]`).nth(index);
+      // The label covers its radio, so clicking the input itself is intercepted.
+      const radio = page.locator('input[id^="flight-bonus"]').nth(index);
       try {
-        await radio.click({ timeout: 10_000 });
+        await page.locator(CABIN_LABEL_SELECTOR).nth(index).click({ timeout: 10_000 });
         held = await radio.isChecked();
       } catch { held = false; }
     }
