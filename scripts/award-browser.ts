@@ -95,11 +95,33 @@ async function run(c:any){
     // session carries over and no second window appears.
     if(c.action==='open-url'){
       if(typeof c.query?.url!=='string'||!/^https:\/\/(www\.koreanair\.com|flyasiana\.com)\//.test(c.query.url))return {status:'failed',code:'INVALID_QUERY'};
-      const ctx=await accountContext(accountId(c.query?.account));
+      const id=accountId(c.query?.account);
+      const ctx=await accountContext(id);
       const tab=await ctx.newPage();
       await tab.goto(c.query.url,{waitUntil:'domcontentloaded',timeout:45000});
+      // Several account windows look identical once open, so each says whose it
+      // is. addInitScript does not apply to a page reached over CDP, and the
+      // airline redirects to its login page, so the badge is painted directly
+      // and repainted on every navigation of this tab.
+      const badge=typeof c.query?.badge==='string'?c.query.badge.slice(0,40):id;
+      const paint=async()=>{
+        await tab.evaluate(label=>{
+          if(document.getElementById('kaw-account-badge'))return;
+          document.title=`[${label}] `+document.title;
+          const bar=document.createElement('div');
+          bar.id='kaw-account-badge';
+          bar.textContent=`${label} 전용 창 — 이 창에서 로그인해 주세요`;
+          bar.style.cssText='position:fixed;inset:0 0 auto 0;z-index:2147483647;background:#162d53;color:#fff;'
+            +'font:600 14px/1.6 -apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:8px';
+          document.documentElement.append(bar);
+          if(document.body)document.body.style.paddingTop='40px';
+        },badge).catch(()=>{});
+      };
+      tab.on('domcontentloaded',()=>{void paint();});
+      await tab.waitForURL(/\/login|viewLogin/,{timeout:9000}).catch(()=>{});
+      await paint();
       await tab.bringToFront();
-      return {status:'opened',url:c.query.url};
+      return {status:'opened',url:c.query.url,account:id};
     }
     // A verification runs on its own page. Reusing the program's public-calendar
     // tab left that page's state behind and the booking form read as unavailable.
@@ -152,6 +174,20 @@ async function run(c:any){
       void Promise.all(attempts).then(all=>all.forEach(x=>{if(x.tab!==win.tab)void x.tab.close().catch(()=>{});}));
       armedByKey.set(key,[win.tab]);
       return {...win.result,tabsTried:ready.length};
+    }
+    // Touching the airline's own page keeps its session alive. A standby that
+    // waits overnight would otherwise find the login gone at 09:00, when there
+    // is no time left to sign in again.
+    if(c.action==='keepalive'){
+      const id=accountId(c.query?.account);
+      const ctx=await accountContext(id);
+      const tab=await ctx.newPage();
+      try{
+        await tab.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});
+        await tab.waitForURL(/\/login|viewLogin/,{timeout:9000}).catch(()=>{});
+        const signedIn=!/\/login|viewLogin/.test(tab.url());
+        return {status:'ok',account:id,authenticated:signedIn};
+      }finally{await tab.close().catch(()=>{});}
     }
     if(c.action==='verify'){
       const ctx=await accountContext(accountId(c.query?.account));

@@ -79,8 +79,9 @@ def booking_url(payload):
     account = str(payload.get("account", "default")).strip() or "default"
     if not re.fullmatch(r"[A-Za-z0-9-]{1,24}", account):
         raise AppError("INVALID_INPUT", "계정 이름을 확인해 주세요.")
+    badge = str(payload.get("badge", "")).strip()[:40]
     return {"url": url, "program": program, "origin": origin, "account": account,
-            "destination": destination, "date": value, "prefilled": prefilled}
+            "badge": badge, "destination": destination, "date": value, "prefilled": prefilled}
 
 
 def open_in_chrome(url):
@@ -1370,7 +1371,7 @@ class ReleaseWatchService:
     # the whole point of preparing them.
     LEAD_SECONDS = 90
     GIVE_UP_SECONDS = 15 * 60
-    LOGIN_CHECK_SECONDS = 10 * 60
+    LOGIN_CHECK_SECONDS = 8 * 60  # Also refreshes the session, not just checks it.
     ARMED_TABS = 3
     RETRY_TABS = 1
 
@@ -1493,7 +1494,12 @@ class ReleaseWatchService:
                 if time.monotonic() >= next_check:
                     next_check = time.monotonic() + self.LOGIN_CHECK_SECONDS
                     try:
-                        browser = self.award.worker.call("confirm-login", timeout=90, program=params["program"])
+                        # Touch the airline page on this account's own profile:
+                        # it both checks and refreshes the session, and it must be
+                        # this account's browser, not the shared one.
+                        browser = self.award.worker.call(
+                            "keepalive", {"account": params["account"]},
+                            timeout=90, program=params["program"])
                         if not browser.get("authenticated"):
                             warning = " ⚠️ %s 로그인이 풀렸어요 — 9시 전에 다시 로그인해 주세요." % (
                                 "대한항공" if params["program"] == "korean-air" else "아시아나")
@@ -1798,7 +1804,8 @@ class Handler(BaseHTTPRequestHandler):
                 # opens already logged in, as a tab rather than another window.
                 try:
                     opened = self.server.award_service.worker.call(
-                        "open-url", {"url": booking["url"], "account": booking["account"]},
+                        "open-url", {"url": booking["url"], "account": booking["account"],
+                                     "badge": booking.get("badge") or booking["account"]},
                         program=booking["program"], timeout=60)
                     booking["openedIn"] = "app" if opened.get("status") == "opened" else "chrome"
                 except SasError:

@@ -339,7 +339,8 @@
     try {
       await api('/api/open-booking', {
         method: 'POST',
-        body: JSON.stringify({ program, account, origin: 'ICN', destination: 'NRT', date: $('release-date').value || '2027-01-01' }),
+        body: JSON.stringify({ program, account, badge: `${programNames[program]} · ${accountNames[account] || account}`,
+          origin: 'ICN', destination: 'NRT', date: $('release-date').value || '2027-01-01' }),
       });
       $('release-status').dataset.kind = 'info';
       $('release-status-text').textContent = `${programNames[program]} 로그인 창을 열었어요 (${accountNames[account] || account}). 로그인한 뒤 대기를 추가해 주세요.`;
