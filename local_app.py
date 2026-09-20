@@ -1348,6 +1348,7 @@ class ReleaseWatchService:
     POLL_SECONDS = 3
     LEAD_SECONDS = 20
     GIVE_UP_SECONDS = 15 * 60
+    LOGIN_CHECK_SECONDS = 10 * 60
 
     def __init__(self, award_service, root=ROOT):
         self.award = award_service
@@ -1418,15 +1419,41 @@ class ReleaseWatchService:
     def _run(self, params):
         try:
             opens_at = datetime.fromisoformat(params["opensAt"]) - timedelta(seconds=self.LEAD_SECONDS)
+            next_check = 0.0
             while not self.stop_flag.is_set():
                 remaining = (opens_at - datetime.now(SEOUL)).total_seconds()
                 if remaining <= 0:
                     break
-                self.update(status="waiting", message="%s 오전 9시까지 %d분 남았어요." % (
-                    params["opensOn"], max(1, int(remaining // 60))))
+                # The airline's session expires on its own. Finding that out at
+                # 09:00 is finding out too late, so it is checked while there is
+                # still time to sign in again.
+                warning = ""
+                if time.monotonic() >= next_check:
+                    next_check = time.monotonic() + self.LOGIN_CHECK_SECONDS
+                    try:
+                        browser = self.award.worker.call("confirm-login", timeout=90, program="korean-air")
+                        if not browser.get("authenticated"):
+                            warning = " ⚠️ 대한항공 로그인이 풀렸어요 — 9시 전에 다시 로그인해 주세요."
+                            self._notify_text("⚠️ 대한항공 로그인이 풀렸어요.\n%s 오전 9시 예매 대기가 예정되어 있으니 그 전에 다시 로그인해 주세요."
+                                              % params["opensOn"])
+                    except SasError:
+                        warning = " (로그인 상태를 확인하지 못했어요.)"
+                self.update(status="waiting", loginWarning=bool(warning),
+                            message="%s 오전 9시까지 %d분 남았어요.%s" % (
+                                params["opensOn"], max(1, int(remaining // 60)), warning))
                 time.sleep(min(remaining, 30))
             if self.stop_flag.is_set():
                 return
+
+            # Fill the form before the hour so the release itself costs one click.
+            query = {"origin": params["origin"], "destination": params["destination"],
+                     "date": params["date"], "cabin": params["cabin"], "hold": True}
+            armed = False
+            try:
+                self.update(status="sniping", message="조회 화면을 미리 채워두고 있어요.")
+                armed = self.award.worker.call("arm", query, program="korean-air", timeout=120).get("status") == "armed"
+            except SasError as error:
+                self.update(message="미리 준비하지 못했어요 (%s). 정각에 처음부터 조회할게요." % error.code)
 
             deadline = time.monotonic() + self.GIVE_UP_SECONDS
             attempts = 0
@@ -1435,12 +1462,16 @@ class ReleaseWatchService:
                 self.update(status="sniping", attempts=attempts,
                             message="자리를 확인하고 있어요 (%d번째)." % attempts)
                 try:
-                    result = self.award.worker.call(
-                        "verify", {"origin": params["origin"], "destination": params["destination"],
-                                   "date": params["date"], "cabin": params["cabin"], "hold": True},
-                        program="korean-air", timeout=120)
+                    if armed:
+                        result = self.award.worker.call("fire", query, program="korean-air", timeout=120)
+                        if result.get("code") == "NOT_ARMED":
+                            armed = False
+                            continue
+                    else:
+                        result = self.award.worker.call("verify", query, program="korean-air", timeout=120)
                 except SasError as error:
                     self.update(message="조회에 실패했어요 (%s). 다시 시도해요." % error.code)
+                    armed = False
                     time.sleep(self.POLL_SECONDS)
                     continue
                 if result.get("status") == "available":
@@ -1454,12 +1485,31 @@ class ReleaseWatchService:
                 if result.get("code") in RESTRICTIONS:
                     self.update(status="failed", message="대한항공이 조회를 제한하거나 로그인이 풀렸어요. 로그인을 확인해 주세요.")
                     return
+                # Submitting consumed the prepared page, so refill it during the
+                # wait rather than paying for the whole form on the next attempt.
+                if armed:
+                    try:
+                        armed = self.award.worker.call("arm", query, program="korean-air", timeout=120).get("status") == "armed"
+                    except SasError:
+                        armed = False
                 time.sleep(self.POLL_SECONDS)
             if not self.stop_flag.is_set():
                 self.update(status="missed",
                             message="9시 이후 %d분 동안 %s 자리를 찾지 못했어요." % (self.GIVE_UP_SECONDS // 60, params["date"]))
         except Exception:
             self.update(status="failed", message="예매 대기 중 문제가 생겼어요.")
+
+    def _notify_text(self, text):
+        token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+        if not token or not chat:
+            return
+        try:
+            request = Request("https://api.telegram.org/bot%s/sendMessage" % token,
+                              data=json.dumps({"chat_id": chat, "text": text}).encode("utf-8"),
+                              headers={"Content-Type": "application/json"})
+            urlopen(request, timeout=15).read()
+        except (URLError, OSError, ValueError):
+            pass
 
     def _notify(self, params, result):
         token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")

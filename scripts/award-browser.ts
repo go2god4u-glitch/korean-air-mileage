@@ -7,7 +7,7 @@ import {searchSky} from '../src/partners/skyteam.js';
 import {searchStar} from '../src/partners/star-alliance.js';
 import {searchPartnerMonth} from '../src/partners/month.js';
 import {searchAsiana} from '../src/partners/asiana.js';
-import {searchKoreanAirAward} from '../src/partners/korean-air-award.js';
+import {searchKoreanAirAward, prepareKoreanAirAward} from '../src/partners/korean-air-award.js';
 import {searchAsianaAward} from '../src/partners/asiana-award.js';
 const urls:Record<string,string>={'korean-air':'https://www.koreanair.com/booking/search?bookingType=A&tripType=OW','asiana-club':'https://flyasiana.com/I/KR/KO/MileageSeatSearch.do','star-alliance':'https://flyasiana.com/C/KR/KO/index','skyteam':'https://www.koreanair.com/booking/search?bookingType=S&tripType=RT'};
 let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=new Map<string,Page>();let busy=false,generation=0;let monthProgram:string|null=null;let monthTask:ReturnType<typeof searchPartnerMonth>|null=null;
@@ -16,6 +16,7 @@ let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=ne
 // It leaves its destination autocomplete unwired when navigator.webdriver is
 // true, and refuses Chrome's headless user agent, so this launches Chrome itself
 // and attaches over CDP. No window is created.
+let armed:Page|null=null;
 let headless:Awaited<ReturnType<typeof openNativeChrome>>|null=null;
 let headlessPageRef:Page|null=null;
 async function headlessPage(){
@@ -58,6 +59,19 @@ async function run(c:any){
     }
     // A verification runs on its own page. Reusing the program's public-calendar
     // tab left that page's state behind and the booking form read as unavailable.
+    // A standby keeps one page with the form already filled, so the 09:00 click
+    // is all that remains. 'arm' prepares it; 'fire' submits the prepared page.
+    if(c.action==='arm'&&c.program==='korean-air'){
+      if(!native)await ensure(c.program,false);
+      if(armed&&!armed.isClosed())await armed.close().catch(()=>{});
+      armed=await native!.context.newPage();
+      await prepareKoreanAirAward(armed,c.query,()=>generation!==initial);
+      return {status:'armed'};
+    }
+    if(c.action==='fire'&&c.program==='korean-air'){
+      if(!armed||armed.isClosed())return {status:'failed',code:'NOT_ARMED'};
+      return await searchKoreanAirAward(armed,{...c.query,prepared:true},()=>generation!==initial);
+    }
     if(c.action==='verify'){
       if(!native)await ensure(c.program,false);
       const p=await native!.context.newPage();

@@ -69,33 +69,46 @@ async function chooseDate(page: Page, date: string): Promise<void> {
 
 /** Asks the airline's own booking search whether this exact date still has the
  *  cabin available. Returns the live answer, never a cached one. */
-export async function searchKoreanAirAward(page: Page, query: AwardQuery & { hold?: boolean }, cancelled: () => boolean) {
+/** Fills the search form but does not submit it.
+ *
+ *  Nearly all of a lookup is typing airport codes and walking the date picker.
+ *  Doing that ahead of 09:00 leaves only the click when the seats actually
+ *  appear, which is the difference between arriving first and arriving ninth. */
+export async function prepareKoreanAirAward(page: Page, query: AwardQuery, cancelled: () => boolean): Promise<void> {
+  const { origin, destination, date, cabin } = query;
+  if (!CABIN_LABELS[cabin]) throw new Error('INVALID_QUERY');
+  if (cancelled()) throw new Error('CANCELLED');
+
+  await page.goto(SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+  if (/\/login/.test(page.url())) throw new Error('LOGIN_REQUIRED');
+  if (sasRestriction(await page.locator('body').innerText())) throw new Error('ACCESS_RESTRICTED');
+
+  const cookies = page.getByRole('button', { name: '필수 쿠키만 허용', exact: true });
+  if (await cookies.isVisible().catch(() => false)) await cookies.click();
+
+  await page.locator('button:visible').filter({ hasText: /^출발지\s/ }).click();
+  await page.getByPlaceholder('도시, 공항').fill('');
+  await page.getByPlaceholder('도시, 공항').pressSequentially(origin, { delay: 100 });
+  await page.getByRole('option').filter({ hasText: origin }).click();
+
+  await page.locator('button:visible').filter({ hasText: /^(To\s*도착지|도착지\s)/ }).click();
+  await page.getByPlaceholder('도시, 공항').fill('');
+  await page.getByPlaceholder('도시, 공항').pressSequentially(destination, { delay: 100 });
+  await page.getByRole('option').filter({ hasText: destination }).click();
+
+  await page.locator('button:visible').filter({ hasText: '출발일' }).click();
+  await chooseDate(page, date);
+  const confirmDates = page.locator('[id^="dialog-calendar"] kds-button_1:visible').filter({ hasText: /^\s*선택\s*$/ });
+  if (await confirmDates.isVisible().catch(() => false)) await confirmDates.click();
+  // Leave the submit for the caller: that click is the whole point of preparing.
+  await page.getByText('항공편 검색', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+}
+
+export async function searchKoreanAirAward(page: Page, query: AwardQuery & { hold?: boolean; prepared?: boolean }, cancelled: () => boolean) {
   const { origin, destination, date, cabin } = query;
   try {
-    if (!CABIN_LABELS[cabin]) throw new Error('INVALID_QUERY');
+    if (!query.prepared) await prepareKoreanAirAward(page, query, cancelled);
     if (cancelled()) throw new Error('CANCELLED');
-
-    await page.goto(SEARCH_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-    if (/\/login/.test(page.url())) throw new Error('LOGIN_REQUIRED');
-    if (sasRestriction(await page.locator('body').innerText())) throw new Error('ACCESS_RESTRICTED');
-
-    const cookies = page.getByRole('button', { name: '필수 쿠키만 허용', exact: true });
-    if (await cookies.isVisible().catch(() => false)) await cookies.click();
-
-    await page.locator('button:visible').filter({ hasText: /^출발지\s/ }).click();
-    await page.getByPlaceholder('도시, 공항').fill('');
-    await page.getByPlaceholder('도시, 공항').pressSequentially(origin, { delay: 100 });
-    await page.getByRole('option').filter({ hasText: origin }).click();
-
-    await page.locator('button:visible').filter({ hasText: /^(To\s*도착지|도착지\s)/ }).click();
-    await page.getByPlaceholder('도시, 공항').fill('');
-    await page.getByPlaceholder('도시, 공항').pressSequentially(destination, { delay: 100 });
-    await page.getByRole('option').filter({ hasText: destination }).click();
-
-    await page.locator('button:visible').filter({ hasText: '출발일' }).click();
-    await chooseDate(page, date);
-    const confirmDates = page.locator('[id^="dialog-calendar"] kds-button_1:visible').filter({ hasText: /^\s*선택\s*$/ });
-    if (await confirmDates.isVisible().catch(() => false)) await confirmDates.click();
 
     // The award search form has no cabin selector: every cabin comes back priced
     // or marked 매진 on the result page, which is exactly what we want to read.
