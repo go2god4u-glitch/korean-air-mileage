@@ -1089,11 +1089,14 @@ class BusinessScanService:
             # so a first-class day is reported as such without claiming it is an award.
             if row.get("firstAwardOrUpgrade"):
                 cabins.append("first")
-            if cabins:
+            # One finding per cabin. Carrying both in a single entry meant the live
+            # check ran for only one of them and its answer was shown for both —
+            # first class at 120,000 miles appeared as an available business seat.
+            for cabin in cabins:
                 # The airline's own reference time travels with the finding: it is
                 # hours older than our read, and treating our read as the truth is
                 # what makes a seat look live when it is a daily snapshot.
-                found.append({"date": row["date"], "cabins": cabins,
+                found.append({"date": row["date"], "cabins": [cabin],
                               "sourceUpdatedAt": value.get("sourceUpdatedAt"),
                               "collectedAt": value.get("collectedAt")})
         return found
