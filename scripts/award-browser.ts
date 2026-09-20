@@ -1,6 +1,6 @@
 import {createInterface} from 'node:readline';
 import {resolve} from 'node:path';
-import type {Page} from 'playwright';
+import type {BrowserContext, Page} from 'playwright';
 import {openNativeChrome, NATIVE_USER_AGENT} from '../src/sas/native-chrome.js';
 import {sasRestriction} from '../src/sas/status.js';
 import {searchSky} from '../src/partners/skyteam.js';
@@ -51,6 +51,19 @@ async function headlessPage(){
   headlessPageRef=headless.context.pages()[0]??await headless.context.newPage();
   return headlessPageRef;
 }
+// Chrome raises its window — and un-minimises it — whenever a tab is created in
+// it. The session check and the live verification each opened a fresh tab and
+// closed it again, so a minimised window came back to the front every few
+// minutes while a scan or a standby ran. One long-lived tab per purpose is
+// created once and navigated from then on, so the window is disturbed once.
+const scratch=new Map<string,Page>();
+async function scratchTab(ctx:BrowserContext,key:string){
+  const held=scratch.get(key);
+  if(held&&!held.isClosed())return held;
+  const tab=await ctx.newPage();
+  scratch.set(key,tab);
+  return tab;
+}
 async function ensure(program:string,navigate=true){
   if(!native){native=await openNativeChrome(resolve('data/partner-chrome-profile'),{keepRunning:true});native.context.on('close',()=>{native=null;pages.clear();generation++;});}
   let p=pages.get(program);if(!p||p.isClosed()){p=await native.context.newPage();pages.set(program,p);if(navigate)await p.goto(urls[program],{waitUntil:'domcontentloaded',timeout:45000});}return p;
@@ -75,7 +88,9 @@ async function run(c:any){
   if(c.action==='cancel'){generation++;return {state:'cancelled'};}
   // Standby arming and firing run on their own tabs and own account profiles, so
   // several can proceed at once; everything else still takes the single lane.
-  const concurrent=c.action==='arm'||c.action==='fire';
+  // 'book' joins them: it runs on its own tab and its own account profile, and
+  // waiting behind a sweep is how a click came to look like nothing happened.
+  const concurrent=c.action==='arm'||c.action==='fire'||c.action==='book';
   if(!concurrent&&busy)return {status:'failed',code:'BUSY'};
   if(!concurrent)busy=true;
   const initial=generation;
@@ -170,7 +185,9 @@ async function run(c:any){
           if(--left===0)resolve(first!);
         });
       });
-      await win.tab.bringToFront().catch(()=>{});
+      // Only raise the window when there is something to act on. Doing it on
+      // every attempt pulled the window forward over whatever else was open.
+      if(win.result.status==='available')await win.tab.bringToFront().catch(()=>{});
       void Promise.all(attempts).then(all=>all.forEach(x=>{if(x.tab!==win.tab)void x.tab.close().catch(()=>{});}));
       armedByKey.set(key,[win.tab]);
       return {...win.result,tabsTried:ready.length};
@@ -181,22 +198,38 @@ async function run(c:any){
     if(c.action==='keepalive'){
       const id=accountId(c.query?.account);
       const ctx=await accountContext(id);
+      const tab=await scratchTab(ctx,`${id}|keepalive`);
+      await tab.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});
+      await tab.waitForURL(/\/login|viewLogin/,{timeout:9000}).catch(()=>{});
+      const signedIn=!/\/login|viewLogin/.test(tab.url());
+      return {status:'ok',account:id,authenticated:signedIn};
+    }
+    // Booking is a verification the user is about to act on, so it gets its own
+    // tab and is deliberately raised — unlike every other check, which must not
+    // pull a minimised window forward. It stops at the airline's payment screen.
+    if(c.action==='book'){
+      const id=accountId(c.query?.account);
+      const ctx=await accountContext(id);
       const tab=await ctx.newPage();
-      try{
-        await tab.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});
-        await tab.waitForURL(/\/login|viewLogin/,{timeout:9000}).catch(()=>{});
-        const signedIn=!/\/login|viewLogin/.test(tab.url());
-        return {status:'ok',account:id,authenticated:signedIn};
-      }finally{await tab.close().catch(()=>{});}
+      const query={...c.query,hold:true};
+      const result=c.program==='korean-air'
+        ? await searchKoreanAirAward(tab,query,()=>generation!==initial)
+        : c.program==='asiana-club'
+          ? await searchAsianaAward(tab,query,()=>generation!==initial)
+          : {status:'failed',code:'INVALID_QUERY'};
+      await tab.bringToFront().catch(()=>{});
+      return {...result,account:id};
     }
     if(c.action==='verify'){
-      const ctx=await accountContext(accountId(c.query?.account));
-      const p=await ctx.newPage();
-      try{
-        if(c.program==='korean-air')return await searchKoreanAirAward(p,c.query,()=>generation!==initial);
-        if(c.program==='asiana-club')return await searchAsianaAward(p,c.query,()=>generation!==initial);
-        return {status:'failed',code:'INVALID_QUERY'};
-      }finally{await p.close().catch(()=>{});}
+      const id=accountId(c.query?.account);
+      const ctx=await accountContext(id);
+      // Verifications are serialised by the busy lane, so one tab per account is
+      // never entered twice at once. Each search navigates it from its own entry
+      // page, so nothing of the previous check is carried in.
+      const p=await scratchTab(ctx,`${id}|verify`);
+      if(c.program==='korean-air')return await searchKoreanAirAward(p,c.query,()=>generation!==initial);
+      if(c.program==='asiana-club')return await searchAsianaAward(p,c.query,()=>generation!==initial);
+      return {status:'failed',code:'INVALID_QUERY'};
     }
     const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login');if(c.action==='confirm-login'){
       if((await state(c.program)).state==='restricted')return {state:'restricted'};
@@ -213,4 +246,9 @@ async function run(c:any){
     return {status:'failed',code:'FORM_REQUIRED'};
   }finally{if(!concurrent)busy=false;}
 }
-const input=createInterface({input:process.stdin,crlfDelay:Infinity});input.on('line',line=>{let c:any;try{c=JSON.parse(line);if(typeof c.id!=='string'||line.length>8192)return;}catch{return;}void run(c).then(result=>process.stdout.write(JSON.stringify({id:c.id,result})+'\n')).catch(()=>process.stdout.write(JSON.stringify({id:c.id,result:{status:'failed',code:'BROWSER_ERROR'}})+'\n'));});input.on('close',()=>{generation++;void (async()=>{await monthTask?.catch(()=>{});await Promise.all([...armedByKey.values()].flat().map(t=>t.close().catch(()=>{})));await Promise.all([...accounts.values()].map(a=>a.close().catch(()=>{})));await native?.close();await headless?.close().catch(()=>{});process.exit(0);})();});
+const input=createInterface({input:process.stdin,crlfDelay:Infinity});input.on('line',line=>{let c:any;try{c=JSON.parse(line);if(typeof c.id!=='string'||line.length>8192)return;}catch{return;}void run(c).then(result=>process.stdout.write(JSON.stringify({id:c.id,result})+'\n')).catch(error=>{
+  // BROWSER_ERROR is all the screen can say; the reason belongs in the log, or
+  // the next failure is diagnosed by guesswork again.
+  console.error(`[award-browser] ${c.action}/${c.program}:`,error instanceof Error?error.stack??error.message:error);
+  process.stdout.write(JSON.stringify({id:c.id,result:{status:'failed',code:'BROWSER_ERROR'}})+'\n');
+});});input.on('close',()=>{generation++;void (async()=>{await monthTask?.catch(()=>{});await Promise.all([...armedByKey.values()].flat().map(t=>t.close().catch(()=>{})));await Promise.all([...accounts.values()].map(a=>a.close().catch(()=>{})));await native?.close();await headless?.close().catch(()=>{});process.exit(0);})();});

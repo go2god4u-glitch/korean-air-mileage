@@ -64,6 +64,41 @@ class AwardService:
         browser=self.worker.call('open',timeout=60,program=program)
         if browser.get('status')=='failed':raise SasError(browser.get('code','BROWSER_ERROR'))
         return {'browser':browser}
+    def booking_preferences(self):
+        """Who lends miles and who flies, from the user's local settings.
+
+        Family membership numbers are personal, so they live under data/ — which
+        git ignores — and never in the repository. A missing or broken file is
+        not an error: the booking screen then opens with nothing pre-selected,
+        which is the airline's own default."""
+        path=self.root/'data'/'local'/'asiana-booking.json'
+        try:
+            saved=json.loads(path.read_text(encoding='utf-8'))
+        except (OSError,ValueError):
+            return {}
+        if not isinstance(saved,dict):return {}
+        prefs={}
+        for key in ('deductFrom','boarding'):
+            numbers=[str(v) for v in saved.get(key) or [] if re.fullmatch(r'\d{6,15}',str(v))]
+            if numbers:prefs[key]=numbers[:6]
+        return prefs
+    def book(self,booking,payload):
+        """Drives the airline's own booking flow to its payment screen.
+
+        Never pays, and never fills a passenger name: it selects the fare and
+        allocates the family's miles, then leaves the screen to the user. The
+        result says plainly whether the seat was reached, because a click that
+        silently does nothing is the complaint this replaced."""
+        adults=payload.get('adults') if isinstance(payload,dict) else None
+        query={'origin':booking['origin'],'destination':booking['destination'],
+               'date':booking['date'],'cabin':'business',
+               'account':booking['account'],'booking':self.booking_preferences()}
+        if isinstance(adults,int) and 1<=adults<=4:query['adults']=adults
+        result=self.worker.call('book',query,program=booking['program'],timeout=180)
+        return {'openedIn':'app' if result.get('held') else 'app-partial',
+                'held':bool(result.get('held')),
+                'holdFailure':result.get('holdFailure') or result.get('code') or '',
+                'liveStatus':result.get('status'),'liveFlights':result.get('flights') or []}
     def confirm_login(self,program):
         if program not in PROGRAMS+('korean-air',):raise SasError('INVALID_QUERY')
         with self.lock:

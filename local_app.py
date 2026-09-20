@@ -1191,10 +1191,18 @@ class BusinessScanService:
                 continue
             cabin = "first" if cabins[0] == "first" else "business"
             try:
+                # Asiana books a couple on one reservation, so it must be asked
+                # for both seats: verifying one seat and reporting it against a
+                # two-seat scan turns "one left" into "available", which is the
+                # answer that wastes the 09:00 the user was waiting for.
+                # Korean Air takes one passenger per account by design, so its
+                # live check stays at one however many are travelling.
+                query = {"origin": hit["origin"], "destination": hit["destination"],
+                         "date": hit["date"], "cabin": cabin}
+                if hit["program"] == "asiana-club" and self.party_size > 1:
+                    query["adults"] = self.party_size
                 result = self.award.worker.call(
-                    "verify", {"origin": hit["origin"], "destination": hit["destination"],
-                               "date": hit["date"], "cabin": cabin},
-                    program=hit["program"], timeout=180)
+                    "verify", query, program=hit["program"], timeout=180)
             except SasError as error:
                 hit["live"], hit["liveCode"] = "unchecked", error.code
                 self.update(job_id, hits=list(hits))
@@ -1579,6 +1587,11 @@ class ReleaseWatchService:
             query = {"origin": params["origin"], "destination": params["destination"],
                      "date": params["date"], "cabin": params["cabin"], "hold": True,
                      "account": params["account"], "adults": params["adults"]}
+            # Asiana's booking screen expires in a minute or two and puts a CAPTCHA
+            # before the passenger step, so whatever can be set beforehand must be:
+            # at 09:00 the user has no time to allocate family miles by hand.
+            if program == "asiana-club":
+                query["booking"] = self.award.booking_preferences()
             armed = False
             try:
                 tabs = self.tabs_per_watch()
@@ -1863,6 +1876,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/open-booking":
                 booking = booking_url(payload)
+                # Asiana publishes no deep link, so opening its page by URL left
+                # the user retyping the whole search. Driving its own booking
+                # flow instead lands on the payment screen with the fare picked
+                # and the family's miles allocated. It stops there: the security
+                # code and 결제하기 are the user's to enter.
+                if booking["program"] == "asiana-club":
+                    held = self.server.award_service.book(booking, payload)
+                    booking.update(held)
+                    self.respond(booking)
+                    return
                 # Prefer the browser the user signed into: the booking page then
                 # opens already logged in, as a tab rather than another window.
                 try:

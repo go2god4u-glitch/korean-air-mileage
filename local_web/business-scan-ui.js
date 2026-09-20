@@ -182,6 +182,13 @@
 
   /** Regions are expanded here so the duration filter can drop short hops before
    *  the server ever looks them up. */
+  /** Two seats is the default: a flight with one left is no use to a couple,
+   *  and the live check has to ask for both or it answers a different question. */
+  function partySize() {
+    const chosen = Number($('scan-adults')?.value);
+    return chosen === 1 || chosen === 2 ? chosen : 2;
+  }
+
   function selection() {
     const overseas = overseasCodes();
     const shared = {
@@ -189,6 +196,7 @@
       programs: checkedValues('scan-programs'),
       startMonth: $('scan-start-month').value,
       endMonth: $('scan-end-month').value,
+      adults: partySize(),
     };
     if (direction() === 'inbound') {
       return { ...shared, origins: overseas.filter((code) => code !== 'ICN'), destinations: ['ICN'] };
@@ -268,16 +276,27 @@
     try {
       const result = await api('/api/open-booking', {
         method: 'POST',
-        body: JSON.stringify({ program, origin, destination, date: hit.date }),
+        body: JSON.stringify({ program, origin, destination, date: hit.date, adults: partySize() }),
       });
       for (const opened of document.querySelectorAll('.date-card.opened')) opened.classList.remove('opened');
       card?.classList.add('opened');
       const stale = hit.sourceUpdatedAt
         ? ` 이 표시는 ${airline}이 ${stamp(hit.sourceUpdatedAt)}에 공개한 현황이라, 그 뒤에 팔렸으면 예매 화면에는 없을 수 있어요.`
         : ' 공개 현황은 실시간이 아니라, 그 뒤에 팔렸으면 예매 화면에는 없을 수 있어요.';
-      setBookingNotice((result.prefilled
-        ? `${airline} 예매 화면을 Chrome에 열었어요 (${route}). 창이 안 보이면 Chrome을 확인해 주세요. 로그인 전이면 로그인 화면이 먼저 나오니, 로그인한 뒤 이 날짜를 다시 눌러 주세요.`
-        : `${airline} 마일리지 예매 화면을 Chrome에 열었어요. ${route} 조건을 직접 입력해 주세요 — 아시아나는 노선·날짜를 주소로 전달할 수 없어요.`) + stale);
+      // Asiana is driven to its own payment screen. Saying so only when it
+      // actually got there matters: a click that quietly did nothing is what
+      // this notice exists for.
+      if (result.held) {
+        setBookingNotice(`${airline} 결제 화면까지 열었어요 (${route}). 운임과 마일리지 공제까지 맞춰 뒀어요.`
+          + ' 남은 건 연락처와 보안문자 입력, 그리고 결제하기 버튼이에요 — 이 둘은 직접 눌러 주세요.');
+      } else if (result.openedIn === 'app-partial') {
+        setBookingNotice(`${airline} 예매 화면까지는 갔지만 좌석 선택이 끝나지 않았어요`
+          + `${result.holdFailure ? ` (${result.holdFailure})` : ''}. Chrome 창에서 이어서 진행해 주세요.` + stale, 'error');
+      } else {
+        setBookingNotice((result.prefilled
+          ? `${airline} 예매 화면을 Chrome에 열었어요 (${route}). 창이 안 보이면 Chrome을 확인해 주세요. 로그인 전이면 로그인 화면이 먼저 나오니, 로그인한 뒤 이 날짜를 다시 눌러 주세요.`
+          : `${airline} 마일리지 예매 화면을 Chrome에 열었어요. ${route} 조건을 직접 입력해 주세요.`) + stale);
+      }
     } catch (error) {
       setBookingNotice(error.message, 'error');
     }

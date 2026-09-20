@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from pathlib import Path
 from datetime import date
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -120,3 +121,67 @@ class SasMonthFailureTests(ProgressTests):
         self.assertEqual(job['completed'],1)
         self.assertEqual(job['legs'][0]['days'][1]['status'],'failed')
         self.assertEqual(job['legs'][0]['days'][2]['status'],'unsearched')
+
+
+class BookingPreferenceTests(unittest.TestCase):
+    """The family's membership numbers steer whose miles are spent and who
+    flies, so a malformed one must be dropped rather than clicked blindly."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.service = AwardService(self.tmp.name, SimpleNamespace(thread=None), interval=0)
+        self.service.worker = Mock()
+
+    def write(self, text):
+        path = Path(self.tmp.name) / "data" / "local"
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "asiana-booking.json").write_text(text, encoding="utf-8")
+
+    def test_missing_file_selects_nothing_rather_than_failing(self):
+        self.assertEqual(self.service.booking_preferences(), {})
+
+    def test_unreadable_file_selects_nothing(self):
+        self.write("{ not json")
+        self.assertEqual(self.service.booking_preferences(), {})
+        self.write('["a list, not settings"]')
+        self.assertEqual(self.service.booking_preferences(), {})
+
+    def test_reads_membership_numbers_for_miles_and_boarding(self):
+        self.write('{"deductFrom":["111111111"],"boarding":["222222222"]}')
+        self.assertEqual(self.service.booking_preferences(),
+                         {"deductFrom": ["111111111"], "boarding": ["222222222"]})
+
+    def test_drops_anything_that_is_not_a_membership_number(self):
+        self.write('{"deductFrom":["111111111","mile_1 OR 1=1","12","  "],"boarding":[]}')
+        # A junk entry must not survive into a selector, and an empty list must
+        # not appear as a key that means "select these".
+        self.assertEqual(self.service.booking_preferences(), {"deductFrom": ["111111111"]})
+
+    def test_book_never_reports_held_when_the_hold_failed(self):
+        self.service.worker.call.return_value = {
+            "status": "available", "flights": ["OZ102 22,500마일"],
+            "held": False, "holdFailure": "BOOKING_PAGE_TIMEOUT"}
+        result = self.service.book(
+            {"program": "asiana-club", "origin": "ICN", "destination": "NRT",
+             "date": "2026-12-10", "account": "default"}, {"adults": 2})
+        self.assertFalse(result["held"])
+        self.assertEqual(result["holdFailure"], "BOOKING_PAGE_TIMEOUT")
+        self.assertEqual(result["openedIn"], "app-partial")
+
+    def test_book_asks_for_every_seat_the_party_needs(self):
+        self.service.worker.call.return_value = {"status": "available", "held": True}
+        self.service.book(
+            {"program": "asiana-club", "origin": "ICN", "destination": "NRT",
+             "date": "2026-12-10", "account": "default"}, {"adults": 2})
+        sent = self.service.worker.call.call_args[0][1]
+        self.assertEqual(sent["adults"], 2)
+        self.assertEqual(sent["cabin"], "business")
+
+    def test_book_ignores_an_implausible_party_size(self):
+        self.service.worker.call.return_value = {"status": "available", "held": True}
+        for bad in (0, 9, "2", None):
+            self.service.book(
+                {"program": "asiana-club", "origin": "ICN", "destination": "NRT",
+                 "date": "2026-12-10", "account": "default"}, {"adults": bad})
+            self.assertNotIn("adults", self.service.worker.call.call_args[0][1])
