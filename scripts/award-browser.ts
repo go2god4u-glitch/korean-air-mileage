@@ -16,7 +16,10 @@ let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=ne
 // It leaves its destination autocomplete unwired when navigator.webdriver is
 // true, and refuses Chrome's headless user agent, so this launches Chrome itself
 // and attaches over CDP. No window is created.
-let armed:Page|null=null;
+// Several prepared tabs, fired together. At 09:00 the airline answers unevenly
+// under load, so the first tab to come back decides and the rest are discarded.
+const ARMED_TABS=3;
+let armed:Page[]=[];
 let headless:Awaited<ReturnType<typeof openNativeChrome>>|null=null;
 let headlessPageRef:Page|null=null;
 async function headlessPage(){
@@ -63,14 +66,38 @@ async function run(c:any){
     // is all that remains. 'arm' prepares it; 'fire' submits the prepared page.
     if(c.action==='arm'&&c.program==='korean-air'){
       if(!native)await ensure(c.program,false);
-      if(armed&&!armed.isClosed())await armed.close().catch(()=>{});
-      armed=await native!.context.newPage();
-      await prepareKoreanAirAward(armed,c.query,()=>generation!==initial);
-      return {status:'armed'};
+      await Promise.all(armed.map(t=>t.close().catch(()=>{})));
+      armed=[];
+      const count=Math.max(1,Math.min(ARMED_TABS,Number(c.query?.tabs)||ARMED_TABS));
+      for(let i=0;i<count;i++){
+        const tab=await native!.context.newPage();
+        try{await prepareKoreanAirAward(tab,c.query,()=>generation!==initial);armed.push(tab);}
+        catch(e){await tab.close().catch(()=>{});if(!armed.length)throw e;break;}
+      }
+      return {status:'armed',tabs:armed.length};
     }
     if(c.action==='fire'&&c.program==='korean-air'){
-      if(!armed||armed.isClosed())return {status:'failed',code:'NOT_ARMED'};
-      return await searchKoreanAirAward(armed,{...c.query,prepared:true},()=>generation!==initial);
+      const ready=armed.filter(t=>!t.isClosed());
+      if(!ready.length)return {status:'failed',code:'NOT_ARMED'};
+      // Waiting for every tab would be slower than one; the point is to take the
+      // first tab that finds a seat and stop caring about the others.
+      let done=false;
+      const attempts=ready.map(async tab=>{
+        try{return {tab,result:await searchKoreanAirAward(tab,{...c.query,prepared:true},()=>generation!==initial||done)};}
+        catch{return {tab,result:{status:'failed' as const,code:'SEARCH_FAILED'}};}
+      });
+      const win=await new Promise<{tab:Page,result:any}>(resolve=>{
+        let left=attempts.length;let first:{tab:Page,result:any}|null=null;
+        for(const attempt of attempts)void attempt.then(outcome=>{
+          first??=outcome;
+          if(outcome.result.status==='available'&&!done){done=true;resolve(outcome);return;}
+          if(--left===0)resolve(first!);
+        });
+      });
+      await win.tab.bringToFront().catch(()=>{});
+      void Promise.all(attempts).then(all=>all.forEach(x=>{if(x.tab!==win.tab)void x.tab.close().catch(()=>{});}));
+      armed=[win.tab];
+      return {...win.result,tabsTried:ready.length};
     }
     if(c.action==='verify'){
       if(!native)await ensure(c.program,false);
@@ -88,4 +115,4 @@ async function run(c:any){
     return {status:'failed',code:'FORM_REQUIRED'};
   }finally{busy=false;}
 }
-const input=createInterface({input:process.stdin,crlfDelay:Infinity});input.on('line',line=>{let c:any;try{c=JSON.parse(line);if(typeof c.id!=='string'||line.length>8192)return;}catch{return;}void run(c).then(result=>process.stdout.write(JSON.stringify({id:c.id,result})+'\n')).catch(()=>process.stdout.write(JSON.stringify({id:c.id,result:{status:'failed',code:'BROWSER_ERROR'}})+'\n'));});input.on('close',()=>{generation++;void (async()=>{await monthTask?.catch(()=>{});await native?.close();await headless?.close().catch(()=>{});process.exit(0);})();});
+const input=createInterface({input:process.stdin,crlfDelay:Infinity});input.on('line',line=>{let c:any;try{c=JSON.parse(line);if(typeof c.id!=='string'||line.length>8192)return;}catch{return;}void run(c).then(result=>process.stdout.write(JSON.stringify({id:c.id,result})+'\n')).catch(()=>process.stdout.write(JSON.stringify({id:c.id,result:{status:'failed',code:'BROWSER_ERROR'}})+'\n'));});input.on('close',()=>{generation++;void (async()=>{await monthTask?.catch(()=>{});await Promise.all(armed.map(t=>t.close().catch(()=>{})));await native?.close();await headless?.close().catch(()=>{});process.exit(0);})();});

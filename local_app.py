@@ -1346,9 +1346,14 @@ class ReleaseWatchService:
     fare and stops there: paying is the user's to do."""
 
     POLL_SECONDS = 3
-    LEAD_SECONDS = 20
+    # Filling three tabs takes about fifteen seconds, so the standby wakes well
+    # before the hour. Arriving at 09:00 with the forms still filling would undo
+    # the whole point of preparing them.
+    LEAD_SECONDS = 90
     GIVE_UP_SECONDS = 15 * 60
     LOGIN_CHECK_SECONDS = 10 * 60
+    ARMED_TABS = 3
+    RETRY_TABS = 1
 
     def __init__(self, award_service, root=ROOT):
         self.award = award_service
@@ -1450,10 +1455,25 @@ class ReleaseWatchService:
                      "date": params["date"], "cabin": params["cabin"], "hold": True}
             armed = False
             try:
-                self.update(status="sniping", message="조회 화면을 미리 채워두고 있어요.")
-                armed = self.award.worker.call("arm", query, program="korean-air", timeout=120).get("status") == "armed"
+                self.update(status="sniping", message="조회 화면 %d개를 미리 채워두고 있어요." % self.ARMED_TABS)
+                ready = self.award.worker.call("arm", dict(query, tabs=self.ARMED_TABS),
+                                               program="korean-air", timeout=240)
+                armed = ready.get("status") == "armed"
             except SasError as error:
                 self.update(message="미리 준비하지 못했어요 (%s). 정각에 처음부터 조회할게요." % error.code)
+
+            # Arming takes time, so hold here until the hour itself. Firing early
+            # only burns a prepared tab on seats that do not exist yet.
+            release_at = datetime.fromisoformat(params["opensAt"])
+            while not self.stop_flag.is_set():
+                countdown = (release_at - datetime.now(SEOUL)).total_seconds()
+                if countdown <= 0:
+                    break
+                self.update(status="sniping",
+                            message="준비 완료. 9시까지 %d초 남았어요." % int(countdown))
+                time.sleep(min(countdown, 1))
+            if self.stop_flag.is_set():
+                return
 
             deadline = time.monotonic() + self.GIVE_UP_SECONDS
             attempts = 0
@@ -1488,8 +1508,11 @@ class ReleaseWatchService:
                 # Submitting consumed the prepared page, so refill it during the
                 # wait rather than paying for the whole form on the next attempt.
                 if armed:
+                    # Refill one tab, not three: a retry wants to be back in the
+                    # air quickly, and the crowd has already thinned by then.
                     try:
-                        armed = self.award.worker.call("arm", query, program="korean-air", timeout=120).get("status") == "armed"
+                        armed = self.award.worker.call("arm", dict(query, tabs=self.RETRY_TABS),
+                                                       program="korean-air", timeout=120).get("status") == "armed"
                     except SasError:
                         armed = False
                 time.sleep(self.POLL_SECONDS)
