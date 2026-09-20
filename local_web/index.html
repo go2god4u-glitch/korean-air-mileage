@@ -93,13 +93,14 @@
 
         <div class="panel search-panel" style="margin-top:24px">
           <h2 style="margin:0 0 6px;font-size:20px;letter-spacing:-.5px">9시 예매 대기 <span style="font-size:12px;font-weight:600;color:var(--blue);vertical-align:middle">오픈런</span></h2>
-          <p class="program-hint" style="margin:0 0 14px">대한항공은 <strong>매일 오전 9시</strong>에 360일 뒤 날짜를 엽니다. 타려는 날짜를 넣으면 그날 9시에 맞춰 대기하다가, 자리가 나오는 즉시 <strong>좌석까지 선택한 예매 화면</strong>을 띄워드려요. 결제만 직접 하시면 됩니다.</p>
+          <p class="program-hint" style="margin:0 0 14px">두 항공사 모두 <strong>매일 오전 9시</strong>에 예매 가능 범위의 마지막 날짜를 엽니다 (대한항공 360일 뒤 · 아시아나 364일 뒤). 타려는 날짜를 넣으면 그날 9시에 맞춰 대기하다가, 자리가 나오는 즉시 <strong>좌석까지 선택한 예매 화면</strong>을 띄워드려요. 결제만 직접 하시면 됩니다.</p>
           <p class="sync-rule">⚠️ 이 기능은 <strong>이 맥에서만</strong> 작동합니다 — 실시간 좌석 확인에 대한항공 로그인이 필요하고, 그 로그인은 조회용 Chrome에만 있어요. 9시에 맥이 켜져 있고 프로그램이 실행 중이어야 합니다.</p>
           <form id="release-form">
             <div class="scan-block scan-row">
               <label class="field"><span class="field-label">출발</span><input id="release-origin" class="scan-input" style="max-width:120px;margin-top:0" value="ICN" maxlength="3" autocomplete="off" spellcheck="false"></label>
               <label class="field"><span class="field-label">도착</span><input id="release-destination" class="scan-input" style="max-width:120px;margin-top:0" maxlength="3" placeholder="LHR" autocomplete="off" spellcheck="false"></label>
               <label class="field"><span class="field-label">타려는 날짜</span><input type="date" id="release-date" class="scan-date" required></label>
+              <label class="field"><span class="field-label">항공사</span><select id="release-program" class="scan-date"><option value="korean-air">대한항공</option><option value="asiana-club">아시아나</option></select></label>
               <label class="field"><span class="field-label">좌석 등급</span><select id="release-cabin" class="scan-date"><option value="business">비즈니스</option><option value="first">일등석</option></select></label>
             </div>
             <p id="release-when" class="scan-estimate"></p>

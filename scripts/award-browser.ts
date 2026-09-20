@@ -8,7 +8,7 @@ import {searchStar} from '../src/partners/star-alliance.js';
 import {searchPartnerMonth} from '../src/partners/month.js';
 import {searchAsiana} from '../src/partners/asiana.js';
 import {searchKoreanAirAward, prepareKoreanAirAward} from '../src/partners/korean-air-award.js';
-import {searchAsianaAward} from '../src/partners/asiana-award.js';
+import {searchAsianaAward, prepareAsianaAward} from '../src/partners/asiana-award.js';
 const urls:Record<string,string>={'korean-air':'https://www.koreanair.com/booking/search?bookingType=A&tripType=OW','asiana-club':'https://flyasiana.com/I/KR/KO/MileageSeatSearch.do','star-alliance':'https://flyasiana.com/C/KR/KO/index','skyteam':'https://www.koreanair.com/booking/search?bookingType=S&tripType=RT'};
 let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=new Map<string,Page>();let busy=false,generation=0;let monthProgram:string|null=null;let monthTask:ReturnType<typeof searchPartnerMonth>|null=null;
 // Asiana's public calendar needs no login, so it gets its own windowless browser
@@ -77,26 +77,36 @@ async function run(c:any){
     // tab left that page's state behind and the booking form read as unavailable.
     // A standby keeps one page with the form already filled, so the 09:00 click
     // is all that remains. 'arm' prepares it; 'fire' submits the prepared page.
-    if(c.action==='arm'&&c.program==='korean-air'){
+    if(c.action==='arm'&&(c.program==='korean-air'||c.program==='asiana-club')){
       if(!native)await ensure(c.program,false);
       await Promise.all(armed.map(t=>t.close().catch(()=>{})));
       armed=[];
       const count=Math.max(1,Math.min(ARMED_TABS,Number(c.query?.tabs)||ARMED_TABS));
       for(let i=0;i<count;i++){
         const tab=await native!.context.newPage();
-        try{await prepareKoreanAirAward(tab,c.query,()=>generation!==initial);armed.push(tab);}
+        try{
+          if(c.program==='korean-air')await prepareKoreanAirAward(tab,c.query,()=>generation!==initial);
+          else await prepareAsianaAward(tab,c.query,()=>generation!==initial);
+          armed.push(tab);
+        }
         catch(e){await tab.close().catch(()=>{});if(!armed.length)throw e;break;}
       }
       return {status:'armed',tabs:armed.length};
     }
-    if(c.action==='fire'&&c.program==='korean-air'){
+    if(c.action==='fire'&&(c.program==='korean-air'||c.program==='asiana-club')){
       const ready=armed.filter(t=>!t.isClosed());
       if(!ready.length)return {status:'failed',code:'NOT_ARMED'};
       // Waiting for every tab would be slower than one; the point is to take the
       // first tab that finds a seat and stop caring about the others.
       let done=false;
       const attempts=ready.map(async tab=>{
-        try{return {tab,result:await searchKoreanAirAward(tab,{...c.query,prepared:true},()=>generation!==initial||done)};}
+        try{
+          const cancel=()=>generation!==initial||done;
+          const result=c.program==='korean-air'
+            ? await searchKoreanAirAward(tab,{...c.query,prepared:true},cancel)
+            : await searchAsianaAward(tab,{...c.query,prepared:true},cancel);
+          return {tab,result};
+        }
         catch{return {tab,result:{status:'failed' as const,code:'SEARCH_FAILED'}};}
       });
       const win=await new Promise<{tab:Page,result:any}>(resolve=>{

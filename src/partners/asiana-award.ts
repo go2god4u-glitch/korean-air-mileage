@@ -80,9 +80,96 @@ export function parseAsianaOffers(rows: { flight: string; business: string }[]):
   return offers;
 }
 
-export async function searchAsianaAward(page: Page, query: AsianaAwardQuery, cancelled: () => boolean) {
+/** Everything after the form is filled: submit, wait, read the business column. */
+async function submitAsianaAward(page: Page, query: AsianaAwardQuery, cancelled: () => boolean) {
+  const { origin, destination, date } = query;
+    let dialogMessage = '';
+  const onDialog = async (dialog: { message: () => string; dismiss: () => Promise<void> }) => {
+    dialogMessage = dialog.message();
+    await dialog.dismiss().catch(() => {});
+  };
+  page.on('dialog', onDialog as never);
+  try {
+    // Searching takes two clicks: 항공권 조회 opens a mileage notice layer, and
+    // the layer's own confirm is what actually submits (toFlightsSelect).
+    await page.locator('#btn_coupon_layer').click({ timeout: 10_000 });
+    await settle(page);
+    const confirm = page.locator('button[onclick*="toFlightsSelect"]:visible');
+    try { await confirm.first().click({ timeout: 15_000 }); } catch { throw new Error('CONFIRM_UNAVAILABLE'); }
+    const deadline = Date.now() + 60_000;
+    while (Date.now() < deadline) {
+      if (cancelled()) throw new Error('CANCELLED');
+      if (dialogMessage) {
+        if (process.env.AWARD_DEBUG === '1') console.error('[asiana-award] dialog:', dialogMessage);
+        throw new Error('ROUTE_UNAVAILABLE');
+      }
+      if (!page.url().includes('RedemptionRegistTravel')) break;
+      await page.waitForTimeout(500);
+    }
+  } finally { page.off('dialog', onDialog as never); }
+  await settle(page, 2500);
+
+  const shown = (await page.locator('body').innerText()).replace(/\s+/gu, ' ');
+  if (/Access Denied/iu.test(shown)) throw new Error('ACCESS_RESTRICTED');
+  // The result must be about the date we asked for. The page's own hidden field
+  // is the reliable witness; its printed date has several formats.
+  const committedOnResult = await page.locator('#departureDate1').inputValue().catch(() => '');
+  const compact = date.replace(/-/gu, '');
+  const [, month, day] = date.split('-').map(Number);
+  const printed = new RegExp(`(^|[^\\d])0?${month}\\s*[./월-]\\s*0?${day}([^\\d]|$)`, 'u');
+  if (committedOnResult ? committedOnResult !== compact : !printed.test(shown)) {
+    if (process.env.AWARD_DEBUG === '1') {
+      console.error('[asiana-award] date mismatch:', { asked: compact, field: committedOnResult, url: page.url() });
+    }
+    throw new Error('QUERY_MISMATCH');
+  }
+
+  const rows = await page.locator('tr:has(td.business_area)').evaluateAll(
+    (nodes) => nodes.slice(0, 40).map((row) => ({
+      flight: row.textContent ?? '',
+      business: (row.querySelector('td.business_area') as HTMLElement | null)?.textContent ?? '',
+    })));
+  if (!rows.length) throw new Error('STRUCTURE_CHANGED');
+  const offers = parseAsianaOffers(rows);
+  const bookable = offers.filter((offer) => !offer.soldOut);
+  return {
+    origin, destination, date, cabin: 'business' as const,
+    status: bookable.length ? 'available' as const : 'empty' as const,
+    flights: bookable.map((offer) => `${offer.flightNumber} ${offer.text}`.trim()),
+    soldOut: offers.length > 0 && !bookable.length,
+    observedAt: new Date().toISOString(),
+  };
+}
+
+/** Fills the form but stops before the search, so the 09:00 release costs only
+ *  the two clicks that submit it. */
+export async function prepareAsianaAward(page: Page, query: AsianaAwardQuery, cancelled: () => boolean): Promise<void> {
+  const { origin, destination, date } = query;
+  if (cancelled()) throw new Error('CANCELLED');
+  await page.goto(ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+  await settle(page);
+  if (/viewLogin/u.test(page.url())) throw new Error('LOGIN_REQUIRED');
+  if (/Access Denied/iu.test(await page.locator('body').innerText())) throw new Error('ACCESS_RESTRICTED');
+
+  const oneWay = page.getByRole('link', { name: '편도', exact: true });
+  if (await oneWay.isVisible().catch(() => false)) await oneWay.click();
+  else await page.getByText('편도', { exact: true }).first().click();
+  await settle(page);
+
+  await pickAirport(page, 'Departure', origin);
+  await pickAirport(page, 'Arrival', destination);
+  await chooseDate(page, date);
+
+  const cabinLink = page.getByRole('link', { name: '비즈니스', exact: true });
+  try { await cabinLink.first().click({ timeout: 8000 }); } catch { throw new Error('CABIN_UNAVAILABLE'); }
+  await settle(page);
+  await page.locator('#btn_coupon_layer').waitFor({ state: 'visible', timeout: 15_000 });
+}
+
+export async function searchAsianaAward(page: Page, query: AsianaAwardQuery & { prepared?: boolean }, cancelled: () => boolean) {
   const { origin, destination, date } = query;
   try {
+    if (query.prepared) return await submitAsianaAward(page, query, cancelled);
     if (cancelled()) throw new Error('CANCELLED');
     await page.goto(ENTRY_URL, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     await settle(page);
@@ -116,62 +203,7 @@ export async function searchAsianaAward(page: Page, query: AsianaAwardQuery, can
       throw new Error('QUERY_MISMATCH');
     }
 
-    let dialogMessage = '';
-    const onDialog = async (dialog: { message: () => string; dismiss: () => Promise<void> }) => {
-      dialogMessage = dialog.message();
-      await dialog.dismiss().catch(() => {});
-    };
-    page.on('dialog', onDialog as never);
-    try {
-      // Searching takes two clicks: 항공권 조회 opens a mileage notice layer, and
-      // the layer's own confirm is what actually submits (toFlightsSelect).
-      await page.locator('#btn_coupon_layer').click({ timeout: 10_000 });
-      await settle(page);
-      const confirm = page.locator('button[onclick*="toFlightsSelect"]:visible');
-      try { await confirm.first().click({ timeout: 15_000 }); } catch { throw new Error('CONFIRM_UNAVAILABLE'); }
-      const deadline = Date.now() + 60_000;
-      while (Date.now() < deadline) {
-        if (cancelled()) throw new Error('CANCELLED');
-        if (dialogMessage) {
-          if (process.env.AWARD_DEBUG === '1') console.error('[asiana-award] dialog:', dialogMessage);
-          throw new Error('ROUTE_UNAVAILABLE');
-        }
-        if (!page.url().includes('RedemptionRegistTravel')) break;
-        await page.waitForTimeout(500);
-      }
-    } finally { page.off('dialog', onDialog as never); }
-    await settle(page, 2500);
-
-    const shown = (await page.locator('body').innerText()).replace(/\s+/gu, ' ');
-    if (/Access Denied/iu.test(shown)) throw new Error('ACCESS_RESTRICTED');
-    // The result must be about the date we asked for. The page's own hidden field
-    // is the reliable witness; its printed date has several formats.
-    const committedOnResult = await page.locator('#departureDate1').inputValue().catch(() => '');
-    const compact = date.replace(/-/gu, '');
-    const [, month, day] = date.split('-').map(Number);
-    const printed = new RegExp(`(^|[^\\d])0?${month}\\s*[./월-]\\s*0?${day}([^\\d]|$)`, 'u');
-    if (committedOnResult ? committedOnResult !== compact : !printed.test(shown)) {
-      if (process.env.AWARD_DEBUG === '1') {
-        console.error('[asiana-award] date mismatch:', { asked: compact, field: committedOnResult, url: page.url() });
-      }
-      throw new Error('QUERY_MISMATCH');
-    }
-
-    const rows = await page.locator('tr:has(td.business_area)').evaluateAll(
-      (nodes) => nodes.slice(0, 40).map((row) => ({
-        flight: row.textContent ?? '',
-        business: (row.querySelector('td.business_area') as HTMLElement | null)?.textContent ?? '',
-      })));
-    if (!rows.length) throw new Error('STRUCTURE_CHANGED');
-    const offers = parseAsianaOffers(rows);
-    const bookable = offers.filter((offer) => !offer.soldOut);
-    return {
-      origin, destination, date, cabin: 'business' as const,
-      status: bookable.length ? 'available' as const : 'empty' as const,
-      flights: bookable.map((offer) => `${offer.flightNumber} ${offer.text}`.trim()),
-      soldOut: offers.length > 0 && !bookable.length,
-      observedAt: new Date().toISOString(),
-    };
+    return await submitAsianaAward(page, query, cancelled);
   } catch (error) {
     if (/viewLogin/u.test(page.url())) return { status: 'failed' as const, code: 'LOGIN_REQUIRED' };
     const code = error instanceof Error ? error.message : '';

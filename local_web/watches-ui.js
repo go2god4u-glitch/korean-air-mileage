@@ -233,13 +233,16 @@
     }
   }
 
-  let releaseConfig = { windowDays: 360, releaseHour: 9 };
+  let releaseConfig = { windows: { 'korean-air': 360, 'asiana-club': 364 }, releaseHour: 9 };
   let releaseTimer = null;
 
   function releaseDateFor(target) {
     const parsed = new Date(target + 'T09:00:00+09:00');
     if (Number.isNaN(parsed.getTime())) return null;
-    parsed.setDate(parsed.getDate() - releaseConfig.windowDays);
+    // Each airline sells a different distance ahead, so the morning a date opens
+    // differs too — Asiana's window is four days longer than Korean Air's.
+    const program = $('release-program').value;
+    parsed.setDate(parsed.getDate() - (releaseConfig.windows[program] ?? 360));
     return parsed;
   }
 
@@ -262,6 +265,15 @@
     }
   }
 
+  /** Asiana publishes economy and business only, so first class is not offered. */
+  function syncReleaseCabins() {
+    const asiana = $('release-program').value === 'asiana-club';
+    const first = $('release-cabin').querySelector('option[value="first"]');
+    first.disabled = asiana;
+    first.textContent = asiana ? '일등석 (아시아나 미제공)' : '일등석';
+    if (asiana && $('release-cabin').value === 'first') $('release-cabin').value = 'business';
+  }
+
   function renderRelease(job) {
     const running = Boolean(job) && ['waiting', 'sniping'].includes(job.status);
     $('release-cancel').hidden = !running;
@@ -279,8 +291,9 @@
   async function loadRelease() {
     try {
       const data = await api('/api/release-watch');
-      releaseConfig = { windowDays: data.windowDays, releaseHour: data.releaseHour };
+      releaseConfig = { windows: data.windows ?? releaseConfig.windows, releaseHour: data.releaseHour };
       renderRelease(data.job);
+      syncReleaseCabins();
       describeRelease();
     } catch { /* the panel simply stays as it is */ }
   }
@@ -296,6 +309,7 @@
           destination: $('release-destination').value.trim().toUpperCase(),
           date: $('release-date').value,
           cabin: $('release-cabin').value,
+          program: $('release-program').value,
         }),
       });
       renderRelease(data.job);
@@ -324,6 +338,7 @@
     $('release-form').addEventListener('submit', startRelease);
     $('release-cancel').addEventListener('click', cancelRelease);
     $('release-date').addEventListener('change', describeRelease);
+    $('release-program').addEventListener('change', () => { syncReleaseCabins(); describeRelease(); });
     // A standby runs for hours, so its state is polled rather than shown once.
     releaseTimer = setInterval(() => void loadRelease(), 15000);
     void loadRelease();

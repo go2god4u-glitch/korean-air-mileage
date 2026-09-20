@@ -1297,14 +1297,17 @@ class BusinessScanService:
                 self.cancelled.discard(job_id)
 
 
-RELEASE_HOUR = 9  # Korean Air opens the date 360 days out at 09:00 KST.
-RELEASE_WINDOW_DAYS = 360
+RELEASE_HOUR = 9  # Both airlines open the far edge of their window at 09:00 KST.
+# How far ahead each airline sells. Measured against the live calendars on
+# 2026-09-20: Korean Air's last open date was +360 days, Asiana's +364.
+RELEASE_WINDOWS = {"korean-air": 360, "asiana-club": 364}
+RELEASE_WINDOW_DAYS = RELEASE_WINDOWS["korean-air"]
 RELEASE_PATH = ROOT / "config" / "release-watch.json"
 
 
-def release_date_for(target, window=RELEASE_WINDOW_DAYS):
-    """The morning a target date becomes bookable."""
-    return target - timedelta(days=window)
+def release_date_for(target, program="korean-air"):
+    """The morning a target date becomes bookable on that airline."""
+    return target - timedelta(days=RELEASE_WINDOWS.get(program, RELEASE_WINDOW_DAYS))
 
 
 def validate_release_request(raw, today=None):
@@ -1328,12 +1331,20 @@ def validate_release_request(raw, today=None):
     cabin = raw.get("cabin", "business")
     if cabin not in ("business", "first"):
         raise AppError("INVALID_CABIN", "비즈니스 또는 일등석을 선택해 주세요.")
+    program = raw.get("program", "korean-air")
+    if program not in BUSINESS_SCAN_PROGRAMS:
+        raise AppError("INVALID_INPUT", "항공사를 선택해 주세요.")
+    # Asiana publishes economy and business only.
+    if program == "asiana-club" and cabin == "first":
+        raise AppError("INVALID_CABIN", "아시아나는 일등석 보너스를 제공하지 않아요.")
+    params["program"] = program
 
     today = today or datetime.now(SEOUL).date()
-    opens_on = release_date_for(target)
+    opens_on = release_date_for(target, program)
     if opens_on < today:
         raise AppError("ALREADY_OPEN", "이미 예매가 열린 날짜예요. 바로 검색해서 확인해 주세요.")
-    params.update(date=value, cabin=cabin, opensOn=opens_on.isoformat(),
+    params.update(date=value, cabin=cabin, windowDays=RELEASE_WINDOWS[program],
+                  opensOn=opens_on.isoformat(),
                   opensAt=datetime.combine(opens_on, dtime(RELEASE_HOUR), SEOUL).isoformat())
     return params
 
@@ -1436,11 +1447,13 @@ class ReleaseWatchService:
                 if time.monotonic() >= next_check:
                     next_check = time.monotonic() + self.LOGIN_CHECK_SECONDS
                     try:
-                        browser = self.award.worker.call("confirm-login", timeout=90, program="korean-air")
+                        browser = self.award.worker.call("confirm-login", timeout=90, program=params["program"])
                         if not browser.get("authenticated"):
-                            warning = " ⚠️ 대한항공 로그인이 풀렸어요 — 9시 전에 다시 로그인해 주세요."
-                            self._notify_text("⚠️ 대한항공 로그인이 풀렸어요.\n%s 오전 9시 예매 대기가 예정되어 있으니 그 전에 다시 로그인해 주세요."
-                                              % params["opensOn"])
+                            warning = " ⚠️ %s 로그인이 풀렸어요 — 9시 전에 다시 로그인해 주세요." % (
+                                "대한항공" if params["program"] == "korean-air" else "아시아나")
+                            airline = "대한항공" if params["program"] == "korean-air" else "아시아나"
+                            self._notify_text("⚠️ %s 로그인이 풀렸어요.\n%s 오전 9시 예매 대기가 예정되어 있으니 그 전에 다시 로그인해 주세요."
+                                              % (airline, params["opensOn"]))
                     except SasError:
                         warning = " (로그인 상태를 확인하지 못했어요.)"
                 self.update(status="waiting", loginWarning=bool(warning),
@@ -1451,13 +1464,14 @@ class ReleaseWatchService:
                 return
 
             # Fill the form before the hour so the release itself costs one click.
+            program = params["program"]
             query = {"origin": params["origin"], "destination": params["destination"],
                      "date": params["date"], "cabin": params["cabin"], "hold": True}
             armed = False
             try:
                 self.update(status="sniping", message="조회 화면 %d개를 미리 채워두고 있어요." % self.ARMED_TABS)
                 ready = self.award.worker.call("arm", dict(query, tabs=self.ARMED_TABS),
-                                               program="korean-air", timeout=240)
+                                               program=program, timeout=240)
                 armed = ready.get("status") == "armed"
             except SasError as error:
                 self.update(message="미리 준비하지 못했어요 (%s). 정각에 처음부터 조회할게요." % error.code)
@@ -1483,12 +1497,12 @@ class ReleaseWatchService:
                             message="자리를 확인하고 있어요 (%d번째)." % attempts)
                 try:
                     if armed:
-                        result = self.award.worker.call("fire", query, program="korean-air", timeout=120)
+                        result = self.award.worker.call("fire", query, program=program, timeout=120)
                         if result.get("code") == "NOT_ARMED":
                             armed = False
                             continue
                     else:
-                        result = self.award.worker.call("verify", query, program="korean-air", timeout=120)
+                        result = self.award.worker.call("verify", query, program=program, timeout=120)
                 except SasError as error:
                     self.update(message="조회에 실패했어요 (%s). 다시 시도해요." % error.code)
                     armed = False
@@ -1503,7 +1517,8 @@ class ReleaseWatchService:
                     self._notify(params, result)
                     return
                 if result.get("code") in RESTRICTIONS:
-                    self.update(status="failed", message="대한항공이 조회를 제한하거나 로그인이 풀렸어요. 로그인을 확인해 주세요.")
+                    airline = "대한항공" if program == "korean-air" else "아시아나"
+                    self.update(status="failed", message="%s가 조회를 제한하거나 로그인이 풀렸어요. 로그인을 확인해 주세요." % airline)
                     return
                 # Submitting consumed the prepared page, so refill it during the
                 # wait rather than paying for the whole form on the next attempt.
@@ -1512,7 +1527,7 @@ class ReleaseWatchService:
                     # air quickly, and the crowd has already thinned by then.
                     try:
                         armed = self.award.worker.call("arm", dict(query, tabs=self.RETRY_TABS),
-                                                       program="korean-air", timeout=120).get("status") == "armed"
+                                                       program=program, timeout=120).get("status") == "armed"
                     except SasError:
                         armed = False
                 time.sleep(self.POLL_SECONDS)
@@ -1538,7 +1553,8 @@ class ReleaseWatchService:
         token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
         if not token or not chat:
             return
-        text = "🎯 %s→%s %s %s 자리가 열렸어요!\n%s\n\nChrome 예매 화면이 열려 있어요 — 결제만 진행해 주세요." % (
+        text = "🎯 [%s] %s→%s %s %s 자리가 열렸어요!\n%s\n\nChrome 예매 화면이 열려 있어요 — 결제만 진행해 주세요." % (
+            "대한항공" if params["program"] == "korean-air" else "아시아나",
             params["origin"], params["destination"], params["date"],
             "비즈니스" if params["cabin"] == "business" else "일등석",
             "\n".join(result.get("flights") or []))
@@ -1652,7 +1668,7 @@ class Handler(BaseHTTPRequestHandler):
             elif target.path == "/api/release-watch":
                 self.respond({"job": self.server.release_watch_service.read(),
                               "today": datetime.now(SEOUL).date().isoformat(),
-                              "windowDays": RELEASE_WINDOW_DAYS, "releaseHour": RELEASE_HOUR})
+                              "windows": RELEASE_WINDOWS, "releaseHour": RELEASE_HOUR})
             elif target.path == "/api/watches":
                 self.respond(dict(read_watches(), sync=watches_sync_state()))
             elif target.path == "/api/watches/cloud":
