@@ -274,28 +274,79 @@
     if (asiana && $('release-cabin').value === 'first') $('release-cabin').value = 'business';
   }
 
-  function renderRelease(job) {
-    const running = Boolean(job) && ['waiting', 'sniping'].includes(job.status);
-    $('release-cancel').hidden = !running;
-    $('release-start').disabled = running;
-    $('release-start').textContent = running ? '대기 중이에요…' : '9시에 잡기';
-    if (!job) return;
-    const kind = job.status === 'found' ? 'success'
-      : ['failed', 'missed', 'interrupted'].includes(job.status) ? 'error'
-      : running ? 'busy' : 'info';
-    const detail = (job.flights ?? []).join(' · ');
-    $('release-status').dataset.kind = kind;
-    $('release-status-text').textContent = job.message + (detail ? ` (${detail})` : '');
+  const accountNames = { default: '기본', main: '계정 1', second: '계정 2' };
+
+  function releaseKind(status) {
+    if (status === 'found') return 'success';
+    if (['failed', 'missed', 'interrupted'].includes(status)) return 'error';
+    return ['waiting', 'sniping'].includes(status) ? 'busy' : 'info';
+  }
+
+  /** Every standby gets its own row: several can wait at once, on different
+   *  airlines and different accounts, and one status line cannot show that. */
+  function renderRelease(jobs) {
+    const list = $('release-list');
+    list.replaceChildren();
+    const live = jobs.filter((job) => ['waiting', 'sniping'].includes(job.status));
+    if (!jobs.length) {
+      const empty = node('div', 'panel empty');
+      empty.append(node('div', 'empty-icon', '⏰'), node('strong', null, '대기 중인 예매가 없어요.'),
+        node('p', null, '타려는 날짜를 넣고 추가하면, 그날 9시에 맞춰 대기하다가 좌석까지 선택해 드려요.'));
+      list.append(empty);
+    }
+    for (const job of jobs) {
+      const row = node('div', 'watch-row');
+      const info = node('div');
+      const airline = programNames[job.program] || job.program;
+      const account = accountNames[job.account] || job.account;
+      info.append(node('strong', null, `${airline} · ${account} · ${job.origin}→${job.destination} ${job.date}`),
+        node('div', 'watch-detail', `${job.opensOn} 오전 9시 · ${job.message}`));
+      const detail = (job.flights ?? []).join(' · ');
+      if (detail) info.append(node('div', 'date-live ok', detail));
+      const actions = node('div', 'watch-actions');
+      const dot = node('span', 'watch-run-dot ' + (job.status === 'found' ? 'ok' : releaseKind(job.status) === 'error' ? 'bad' : 'live'));
+      actions.append(dot);
+      if (['waiting', 'sniping'].includes(job.status)) {
+        const stop = node('button', 'watch-button danger', '멈추기');
+        stop.type = 'button';
+        stop.addEventListener('click', () => void cancelRelease(job.id));
+        actions.append(stop);
+      }
+      row.append(info, actions);
+      list.append(row);
+    }
+    $('release-start').disabled = live.length >= 6;
+    $('release-status').dataset.kind = live.length ? 'busy' : 'info';
+    $('release-status-text').textContent = live.length
+      ? `${live.length}건 대기 중이에요. 9시에 각각 ${Math.max(1, Math.min(3, Math.floor(6 / live.length)))}개 탭으로 동시에 잡아요.`
+      : '타려는 날짜를 넣고 추가해 주세요.';
   }
 
   async function loadRelease() {
     try {
       const data = await api('/api/release-watch');
       releaseConfig = { windows: data.windows ?? releaseConfig.windows, releaseHour: data.releaseHour };
-      renderRelease(data.job);
+      renderRelease(data.jobs ?? (data.job ? [data.job] : []));
       syncReleaseCabins();
       describeRelease();
     } catch { /* the panel simply stays as it is */ }
+  }
+
+  /** Each account signs in once, in its own Chrome profile. */
+  async function openReleaseLogin() {
+    const program = $('release-program').value;
+    const account = $('release-account').value;
+    try {
+      await api('/api/open-booking', {
+        method: 'POST',
+        body: JSON.stringify({ program, account, origin: 'ICN', destination: 'NRT', date: $('release-date').value || '2027-01-01' }),
+      });
+      $('release-status').dataset.kind = 'info';
+      $('release-status-text').textContent = `${programNames[program]} 로그인 창을 열었어요 (${accountNames[account] || account}). 로그인한 뒤 대기를 추가해 주세요.`;
+    } catch (error) {
+      $('release-status').dataset.kind = 'error';
+      $('release-status-text').textContent = error.message;
+    }
   }
 
   async function startRelease(event) {
@@ -310,9 +361,10 @@
           date: $('release-date').value,
           cabin: $('release-cabin').value,
           program: $('release-program').value,
+          account: $('release-account').value,
         }),
       });
-      renderRelease(data.job);
+      await loadRelease();
     } catch (error) {
       $('release-status').dataset.kind = 'error';
       $('release-status-text').textContent = error.message;
@@ -320,9 +372,9 @@
     }
   }
 
-  async function cancelRelease() {
+  async function cancelRelease(id) {
     try {
-      await api('/api/release-watch/cancel', { method: 'POST', body: JSON.stringify({}) });
+      await api('/api/release-watch/cancel', { method: 'POST', body: JSON.stringify(id ? { id } : {}) });
       void loadRelease();
     } catch (error) {
       $('release-status').dataset.kind = 'error';
@@ -336,7 +388,7 @@
     $('watch-cancel-edit').addEventListener('click', () => fillForm(null));
     $('watch-refresh').addEventListener('click', () => { void loadWatches(); void loadCloud(); });
     $('release-form').addEventListener('submit', startRelease);
-    $('release-cancel').addEventListener('click', cancelRelease);
+    $('release-login').addEventListener('click', () => void openReleaseLogin());
     $('release-date').addEventListener('change', describeRelease);
     $('release-program').addEventListener('change', () => { syncReleaseCabins(); describeRelease(); });
     // A standby runs for hours, so its state is polled rather than shown once.

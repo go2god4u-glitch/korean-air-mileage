@@ -11,6 +11,26 @@ import {searchKoreanAirAward, prepareKoreanAirAward} from '../src/partners/korea
 import {searchAsianaAward, prepareAsianaAward} from '../src/partners/asiana-award.js';
 const urls:Record<string,string>={'korean-air':'https://www.koreanair.com/booking/search?bookingType=A&tripType=OW','asiana-club':'https://flyasiana.com/I/KR/KO/MileageSeatSearch.do','star-alliance':'https://flyasiana.com/C/KR/KO/index','skyteam':'https://www.koreanair.com/booking/search?bookingType=S&tripType=RT'};
 let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=new Map<string,Page>();let busy=false,generation=0;let monthProgram:string|null=null;let monthTask:ReturnType<typeof searchPartnerMonth>|null=null;
+// An airline identifies a login by browser session, so two accounts cannot share
+// one profile. Each account gets its own Chrome, signed in once and kept.
+const accounts=new Map<string,Awaited<ReturnType<typeof openNativeChrome>>>();
+function accountId(raw?:unknown){
+  const id=typeof raw==='string'?raw.trim():'';
+  return /^[a-z0-9-]{1,24}$/i.test(id)?id:'default';
+}
+async function accountContext(id:string){
+  if(id==='default'){
+    if(!native){native=await openNativeChrome(resolve('data/partner-chrome-profile'),{keepRunning:true});native.context.on('close',()=>{native=null;pages.clear();generation++;});}
+    return native.context;
+  }
+  let held=accounts.get(id);
+  if(!held){
+    held=await openNativeChrome(resolve(`data/account-${id}-profile`),{keepRunning:true});
+    accounts.set(id,held);
+    held.context.on('close',()=>{accounts.delete(id);generation++;});
+  }
+  return held.context;
+}
 // Asiana's public calendar needs no login, so it gets its own windowless browser
 // instead of the shared, visible profile the login-based programs need.
 // It leaves its destination autocomplete unwired when navigator.webdriver is
@@ -19,7 +39,10 @@ let native:Awaited<ReturnType<typeof openNativeChrome>>|null=null;const pages=ne
 // Several prepared tabs, fired together. At 09:00 the airline answers unevenly
 // under load, so the first tab to come back decides and the rest are discarded.
 const ARMED_TABS=3;
-let armed:Page[]=[];
+// Keyed by standby, because several can wait on the same 09:00 at once and one
+// shared list meant the second arming closed the first one's tabs.
+const armedByKey=new Map<string,Page[]>();
+function armKey(c:any){return `${c.program}|${accountId(c.query?.account)}|${c.query?.origin}|${c.query?.destination}|${c.query?.date}|${c.query?.cabin}`;}
 let headless:Awaited<ReturnType<typeof openNativeChrome>>|null=null;
 let headlessPageRef:Page|null=null;
 async function headlessPage(){
@@ -50,7 +73,12 @@ async function run(c:any){
   if(!urls[c.program])return {status:'failed',code:'INVALID_QUERY'};
   if(c.action==='status')return monthProgram===c.program?{state:'searching'}:state(c.program);
   if(c.action==='cancel'){generation++;return {state:'cancelled'};}
-  if(busy)return {status:'failed',code:'BUSY'};busy=true;const initial=generation;
+  // Standby arming and firing run on their own tabs and own account profiles, so
+  // several can proceed at once; everything else still takes the single lane.
+  const concurrent=c.action==='arm'||c.action==='fire';
+  if(!concurrent&&busy)return {status:'failed',code:'BUSY'};
+  if(!concurrent)busy=true;
+  const initial=generation;
   if(c.action==='search-month'){
     try{
       if(!['skyteam','star-alliance'].includes(c.program)||!Array.isArray(c.query)||c.query.length<1||c.query.length>31)return {status:'failed',code:'INVALID_QUERY'};
@@ -67,8 +95,8 @@ async function run(c:any){
     // session carries over and no second window appears.
     if(c.action==='open-url'){
       if(typeof c.query?.url!=='string'||!/^https:\/\/(www\.koreanair\.com|flyasiana\.com)\//.test(c.query.url))return {status:'failed',code:'INVALID_QUERY'};
-      await ensure(c.program,false);
-      const tab=await native!.context.newPage();
+      const ctx=await accountContext(accountId(c.query?.account));
+      const tab=await ctx.newPage();
       await tab.goto(c.query.url,{waitUntil:'domcontentloaded',timeout:45000});
       await tab.bringToFront();
       return {status:'opened',url:c.query.url};
@@ -78,12 +106,14 @@ async function run(c:any){
     // A standby keeps one page with the form already filled, so the 09:00 click
     // is all that remains. 'arm' prepares it; 'fire' submits the prepared page.
     if(c.action==='arm'&&(c.program==='korean-air'||c.program==='asiana-club')){
-      if(!native)await ensure(c.program,false);
-      await Promise.all(armed.map(t=>t.close().catch(()=>{})));
-      armed=[];
+      const ctx=await accountContext(accountId(c.query?.account));
+      const key=armKey(c);
+      await Promise.all((armedByKey.get(key)??[]).map(t=>t.close().catch(()=>{})));
+      const armed:Page[]=[];
+      armedByKey.set(key,armed);
       const count=Math.max(1,Math.min(ARMED_TABS,Number(c.query?.tabs)||ARMED_TABS));
       for(let i=0;i<count;i++){
-        const tab=await native!.context.newPage();
+        const tab=await ctx.newPage();
         try{
           if(c.program==='korean-air')await prepareKoreanAirAward(tab,c.query,()=>generation!==initial);
           else await prepareAsianaAward(tab,c.query,()=>generation!==initial);
@@ -94,7 +124,8 @@ async function run(c:any){
       return {status:'armed',tabs:armed.length};
     }
     if(c.action==='fire'&&(c.program==='korean-air'||c.program==='asiana-club')){
-      const ready=armed.filter(t=>!t.isClosed());
+      const key=armKey(c);
+      const ready=(armedByKey.get(key)??[]).filter(t=>!t.isClosed());
       if(!ready.length)return {status:'failed',code:'NOT_ARMED'};
       // Waiting for every tab would be slower than one; the point is to take the
       // first tab that finds a seat and stop caring about the others.
@@ -119,12 +150,12 @@ async function run(c:any){
       });
       await win.tab.bringToFront().catch(()=>{});
       void Promise.all(attempts).then(all=>all.forEach(x=>{if(x.tab!==win.tab)void x.tab.close().catch(()=>{});}));
-      armed=[win.tab];
+      armedByKey.set(key,[win.tab]);
       return {...win.result,tabsTried:ready.length};
     }
     if(c.action==='verify'){
-      if(!native)await ensure(c.program,false);
-      const p=await native!.context.newPage();
+      const ctx=await accountContext(accountId(c.query?.account));
+      const p=await ctx.newPage();
       try{
         if(c.program==='korean-air')return await searchKoreanAirAward(p,c.query,()=>generation!==initial);
         if(c.program==='asiana-club')return await searchAsianaAward(p,c.query,()=>generation!==initial);
@@ -144,6 +175,6 @@ async function run(c:any){
     if(c.program==='skyteam')return await searchSky(p,c.query,()=>generation!==initial);
     if(c.program==='star-alliance')return await searchStar(p,c.query,()=>generation!==initial);
     return {status:'failed',code:'FORM_REQUIRED'};
-  }finally{busy=false;}
+  }finally{if(!concurrent)busy=false;}
 }
-const input=createInterface({input:process.stdin,crlfDelay:Infinity});input.on('line',line=>{let c:any;try{c=JSON.parse(line);if(typeof c.id!=='string'||line.length>8192)return;}catch{return;}void run(c).then(result=>process.stdout.write(JSON.stringify({id:c.id,result})+'\n')).catch(()=>process.stdout.write(JSON.stringify({id:c.id,result:{status:'failed',code:'BROWSER_ERROR'}})+'\n'));});input.on('close',()=>{generation++;void (async()=>{await monthTask?.catch(()=>{});await Promise.all(armed.map(t=>t.close().catch(()=>{})));await native?.close();await headless?.close().catch(()=>{});process.exit(0);})();});
+const input=createInterface({input:process.stdin,crlfDelay:Infinity});input.on('line',line=>{let c:any;try{c=JSON.parse(line);if(typeof c.id!=='string'||line.length>8192)return;}catch{return;}void run(c).then(result=>process.stdout.write(JSON.stringify({id:c.id,result})+'\n')).catch(()=>process.stdout.write(JSON.stringify({id:c.id,result:{status:'failed',code:'BROWSER_ERROR'}})+'\n'));});input.on('close',()=>{generation++;void (async()=>{await monthTask?.catch(()=>{});await Promise.all([...armedByKey.values()].flat().map(t=>t.close().catch(()=>{})));await Promise.all([...accounts.values()].map(a=>a.close().catch(()=>{})));await native?.close();await headless?.close().catch(()=>{});process.exit(0);})();});

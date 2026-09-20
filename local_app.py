@@ -76,7 +76,10 @@ def booking_url(payload):
     else:
         url = "https://flyasiana.com/C/KR/KO/contents/book-online?tabId=mileage"
         prefilled = False
-    return {"url": url, "program": program, "origin": origin,
+    account = str(payload.get("account", "default")).strip() or "default"
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,24}", account):
+        raise AppError("INVALID_INPUT", "계정 이름을 확인해 주세요.")
+    return {"url": url, "program": program, "origin": origin, "account": account,
             "destination": destination, "date": value, "prefilled": prefilled}
 
 
@@ -1338,6 +1341,11 @@ def validate_release_request(raw, today=None):
     if program == "asiana-club" and cabin == "first":
         raise AppError("INVALID_CABIN", "아시아나는 일등석 보너스를 제공하지 않아요.")
     params["program"] = program
+    account = str(raw.get("account", "default")).strip() or "default"
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,24}", account):
+        raise AppError("INVALID_INPUT", "계정 이름은 영문·숫자·하이픈 24자 이내로 지어 주세요.")
+    params["account"] = account
+    params["label"] = str(raw.get("label", "")).strip()[:40]
 
     today = today or datetime.now(SEOUL).date()
     opens_on = release_date_for(target, program)
@@ -1366,77 +1374,115 @@ class ReleaseWatchService:
     ARMED_TABS = 3
     RETRY_TABS = 1
 
+    MAX_WATCHES = 6
+    TAB_BUDGET = 6  # Total tabs fired at 09:00 across every standby.
+
     def __init__(self, award_service, root=ROOT):
         self.award = award_service
         self.root = Path(root)
         self.lock = threading.RLock()
-        self.job = None
-        self.thread = None
-        self.stop_flag = threading.Event()
+        self.jobs = {}       # id -> job dict
+        self.threads = {}    # id -> Thread
+        self.stops = {}      # id -> Event
+
+    def tabs_per_watch(self):
+        """Split a fixed tab budget across the live standbys rather than letting
+        each take three — nine tabs firing at once strains the mac and looks like
+        a burst from one address to the airline."""
+        with self.lock:
+            live = max(1, len([j for j in self.jobs.values() if j.get("status") in ("waiting", "sniping")]))
+        return max(1, min(self.ARMED_TABS, self.TAB_BUDGET // live))
+
+    def read_all(self):
+        with self.lock:
+            return [dict(job) for job in self.jobs.values()]
 
     def read(self):
-        with self.lock:
-            if self.job:
-                return dict(self.job)
+        """Backwards-compatible single view: the first live standby, if any."""
+        jobs = self.read_all()
+        if jobs:
+            return jobs[0]
         # A standby that was waiting when the program stopped is not still waiting.
         # Saying so is what keeps someone from trusting it through 9am.
+        for saved in self.read_saved():
+            if saved.get("status") in ("waiting", "sniping"):
+                saved["status"] = "interrupted"
+                saved["message"] = ("프로그램이 다시 시작되어 예매 대기가 끊겼어요. "
+                                    "9시에 잡으려면 다시 신청해 주세요.")
+            return saved
+        return None
+
+    def read_saved(self):
         try:
             saved = json.loads((self.root / "data" / "local" / "release-watch-job.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return None
-        if not isinstance(saved, dict):
-            return None
-        if saved.get("status") in ("waiting", "sniping"):
-            saved["status"] = "interrupted"
-            saved["message"] = ("프로그램이 다시 시작되어 예매 대기가 끊겼어요. "
-                                "9시에 잡으려면 다시 신청해 주세요.")
-        return saved
+            return []
+        if isinstance(saved, dict):
+            saved = [saved]
+        return [job for job in saved if isinstance(job, dict)]
 
-    def update(self, **fields):
+    def save(self):
+        try:
+            (self.root / "data" / "local").mkdir(parents=True, exist_ok=True)
+            (self.root / "data" / "local" / "release-watch-job.json").write_text(
+                json.dumps(self.read_all(), ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+
+    def update(self, watch_id, **fields):
         with self.lock:
-            if self.job:
-                self.job.update(fields)
-                snapshot = dict(self.job)
-            else:
-                snapshot = None
-        if snapshot:
-            try:
-                self.award.sas.store.root  # noqa: B018 - touch to keep the root resolved
-            except Exception:
-                pass
-            try:
-                (self.root / "data" / "local").mkdir(parents=True, exist_ok=True)
-                (self.root / "data" / "local" / "release-watch-job.json").write_text(
-                    json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-            except OSError:
-                pass
+            job = self.jobs.get(watch_id)
+            if not job:
+                return
+            job.update(fields)
+        self.save()
 
     def start(self, raw):
         params = validate_release_request(raw)
+        watch_id = uuid.uuid4().hex[:12]
         with self.lock:
-            if self.thread and self.thread.is_alive():
-                raise AppError("BUSY", "이미 예매 대기 중이에요. 먼저 멈춰 주세요.", 409)
-            self.stop_flag.clear()
-            self.job = dict(params, status="waiting", attempts=0,
-                            message="%s 오전 9시에 %s 자리가 열리면 바로 잡을게요." % (params["opensOn"], params["date"]),
-                            startedAt=utc_now().isoformat())
-            self.thread = threading.Thread(target=self._run, args=(dict(params),), daemon=True)
-            self.thread.start()
-            return dict(self.job)
+            live = [j for j in self.jobs.values() if j.get("status") in ("waiting", "sniping")]
+            if len(live) >= self.MAX_WATCHES:
+                raise AppError("TOO_MANY_WATCHES",
+                               "동시에 기다릴 수 있는 건 최대 %d건이에요." % self.MAX_WATCHES, 409)
+            # The same account cannot chase two dates at once: arming one replaces
+            # the other's prepared tabs in that profile.
+            clash = next((j for j in live if j["account"] == params["account"]
+                          and j["program"] == params["program"]
+                          and (j["date"], j["origin"], j["destination"]) != (params["date"], params["origin"], params["destination"])), None)
+            if clash:
+                raise AppError("ACCOUNT_BUSY",
+                               "'%s' 계정은 이미 %s %s→%s 를 기다리고 있어요. 다른 계정을 쓰거나 먼저 멈춰 주세요."
+                               % (params["account"], clash["date"], clash["origin"], clash["destination"]), 409)
+            self.stops[watch_id] = threading.Event()
+            self.jobs[watch_id] = dict(params, id=watch_id, status="waiting", attempts=0,
+                                       message="%s 오전 9시에 %s 자리가 열리면 바로 잡을게요." % (params["opensOn"], params["date"]),
+                                       startedAt=utc_now().isoformat())
+            thread = threading.Thread(target=self._run, args=(watch_id, dict(params)), daemon=True)
+            self.threads[watch_id] = thread
+            thread.start()
+            job = dict(self.jobs[watch_id])
+        self.save()
+        return job
 
-    def cancel(self):
-        self.stop_flag.set()
+    def cancel(self, watch_id=None):
         with self.lock:
-            if self.job and self.job.get("status") in ("waiting", "sniping"):
-                self.job.update(status="cancelled", message="예매 대기를 멈췄어요.")
-        self.update()
-        return {"status": "cancelled"}
+            targets = [watch_id] if watch_id else list(self.jobs)
+            for target in targets:
+                stop = self.stops.get(target)
+                if stop:
+                    stop.set()
+                job = self.jobs.get(target)
+                if job and job.get("status") in ("waiting", "sniping"):
+                    job.update(status="cancelled", message="예매 대기를 멈췄어요.")
+        self.save()
+        return {"status": "cancelled", "cancelled": len(targets)}
 
-    def _run(self, params):
+    def _run(self, watch_id, params):
         try:
             opens_at = datetime.fromisoformat(params["opensAt"]) - timedelta(seconds=self.LEAD_SECONDS)
             next_check = 0.0
-            while not self.stop_flag.is_set():
+            while not self.stops[watch_id].is_set():
                 remaining = (opens_at - datetime.now(SEOUL)).total_seconds()
                 if remaining <= 0:
                     break
@@ -1456,44 +1502,46 @@ class ReleaseWatchService:
                                               % (airline, params["opensOn"]))
                     except SasError:
                         warning = " (로그인 상태를 확인하지 못했어요.)"
-                self.update(status="waiting", loginWarning=bool(warning),
+                self.update(watch_id, status="waiting", loginWarning=bool(warning),
                             message="%s 오전 9시까지 %d분 남았어요.%s" % (
                                 params["opensOn"], max(1, int(remaining // 60)), warning))
                 time.sleep(min(remaining, 30))
-            if self.stop_flag.is_set():
+            if self.stops[watch_id].is_set():
                 return
 
             # Fill the form before the hour so the release itself costs one click.
             program = params["program"]
             query = {"origin": params["origin"], "destination": params["destination"],
-                     "date": params["date"], "cabin": params["cabin"], "hold": True}
+                     "date": params["date"], "cabin": params["cabin"], "hold": True,
+                     "account": params["account"]}
             armed = False
             try:
-                self.update(status="sniping", message="조회 화면 %d개를 미리 채워두고 있어요." % self.ARMED_TABS)
-                ready = self.award.worker.call("arm", dict(query, tabs=self.ARMED_TABS),
+                tabs = self.tabs_per_watch()
+                self.update(watch_id, status="sniping", message="조회 화면 %d개를 미리 채워두고 있어요." % tabs)
+                ready = self.award.worker.call("arm", dict(query, tabs=tabs),
                                                program=program, timeout=240)
                 armed = ready.get("status") == "armed"
             except SasError as error:
-                self.update(message="미리 준비하지 못했어요 (%s). 정각에 처음부터 조회할게요." % error.code)
+                self.update(watch_id, message="미리 준비하지 못했어요 (%s). 정각에 처음부터 조회할게요." % error.code)
 
             # Arming takes time, so hold here until the hour itself. Firing early
             # only burns a prepared tab on seats that do not exist yet.
             release_at = datetime.fromisoformat(params["opensAt"])
-            while not self.stop_flag.is_set():
+            while not self.stops[watch_id].is_set():
                 countdown = (release_at - datetime.now(SEOUL)).total_seconds()
                 if countdown <= 0:
                     break
-                self.update(status="sniping",
+                self.update(watch_id, status="sniping",
                             message="준비 완료. 9시까지 %d초 남았어요." % int(countdown))
                 time.sleep(min(countdown, 1))
-            if self.stop_flag.is_set():
+            if self.stops[watch_id].is_set():
                 return
 
             deadline = time.monotonic() + self.GIVE_UP_SECONDS
             attempts = 0
-            while not self.stop_flag.is_set() and time.monotonic() < deadline:
+            while not self.stops[watch_id].is_set() and time.monotonic() < deadline:
                 attempts += 1
-                self.update(status="sniping", attempts=attempts,
+                self.update(watch_id, status="sniping", attempts=attempts,
                             message="자리를 확인하고 있어요 (%d번째)." % attempts)
                 try:
                     if armed:
@@ -1504,12 +1552,12 @@ class ReleaseWatchService:
                     else:
                         result = self.award.worker.call("verify", query, program=program, timeout=120)
                 except SasError as error:
-                    self.update(message="조회에 실패했어요 (%s). 다시 시도해요." % error.code)
+                    self.update(watch_id, message="조회에 실패했어요 (%s). 다시 시도해요." % error.code)
                     armed = False
                     time.sleep(self.POLL_SECONDS)
                     continue
                 if result.get("status") == "available":
-                    self.update(status="found", flights=result.get("flights") or [],
+                    self.update(watch_id, status="found", flights=result.get("flights") or [],
                                 held=bool(result.get("held")), foundAt=utc_now().isoformat(),
                                 message=("자리를 찾았어요! 좌석까지 선택해 두었으니 Chrome에서 결제만 진행해 주세요."
                                          if result.get("held") else
@@ -1518,7 +1566,7 @@ class ReleaseWatchService:
                     return
                 if result.get("code") in RESTRICTIONS:
                     airline = "대한항공" if program == "korean-air" else "아시아나"
-                    self.update(status="failed", message="%s가 조회를 제한하거나 로그인이 풀렸어요. 로그인을 확인해 주세요." % airline)
+                    self.update(watch_id, status="failed", message="%s가 조회를 제한하거나 로그인이 풀렸어요. 로그인을 확인해 주세요." % airline)
                     return
                 # Submitting consumed the prepared page, so refill it during the
                 # wait rather than paying for the whole form on the next attempt.
@@ -1531,11 +1579,11 @@ class ReleaseWatchService:
                     except SasError:
                         armed = False
                 time.sleep(self.POLL_SECONDS)
-            if not self.stop_flag.is_set():
-                self.update(status="missed",
+            if not self.stops[watch_id].is_set():
+                self.update(watch_id, status="missed",
                             message="9시 이후 %d분 동안 %s 자리를 찾지 못했어요." % (self.GIVE_UP_SECONDS // 60, params["date"]))
         except Exception:
-            self.update(status="failed", message="예매 대기 중 문제가 생겼어요.")
+            self.update(watch_id, status="failed", message="예매 대기 중 문제가 생겼어요.")
 
     def _notify_text(self, text):
         token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
@@ -1666,7 +1714,8 @@ class Handler(BaseHTTPRequestHandler):
                 except (OSError, ValueError):
                     raise AppError("FLIGHT_HOURS_UNAVAILABLE", "비행시간 정보를 불러오지 못했어요.", 503)
             elif target.path == "/api/release-watch":
-                self.respond({"job": self.server.release_watch_service.read(),
+                self.respond({"jobs": self.server.release_watch_service.read_all(),
+                              "job": self.server.release_watch_service.read(),
                               "today": datetime.now(SEOUL).date().isoformat(),
                               "windows": RELEASE_WINDOWS, "releaseHour": RELEASE_HOUR})
             elif target.path == "/api/watches":
@@ -1738,7 +1787,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond({"job": self.server.release_watch_service.start(payload)}, 202)
                 return
             if self.path == "/api/release-watch/cancel":
-                self.respond(self.server.release_watch_service.cancel())
+                watch_id = payload.get("id") if isinstance(payload, dict) else None
+                if watch_id is not None and (not isinstance(watch_id, str) or not re.fullmatch(r"[a-f0-9]{12}", watch_id)):
+                    raise AppError("INVALID_INPUT", "멈출 대기를 찾지 못했어요.")
+                self.respond(self.server.release_watch_service.cancel(watch_id))
                 return
             if self.path == "/api/open-booking":
                 booking = booking_url(payload)
@@ -1746,7 +1798,8 @@ class Handler(BaseHTTPRequestHandler):
                 # opens already logged in, as a tab rather than another window.
                 try:
                     opened = self.server.award_service.worker.call(
-                        "open-url", {"url": booking["url"]}, program=booking["program"], timeout=60)
+                        "open-url", {"url": booking["url"], "account": booking["account"]},
+                        program=booking["program"], timeout=60)
                     booking["openedIn"] = "app" if opened.get("status") == "opened" else "chrome"
                 except SasError:
                     booking["openedIn"] = "chrome"
