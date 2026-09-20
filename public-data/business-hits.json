@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-19T22:41:29.420Z",
+  "updatedAt": "2026-09-20T01:34:29.005Z",
   "hits": [
     {
       "watchId": "default",
@@ -9,7 +9,7 @@
       "destinationName": "파리",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:22:54.530Z",
+      "collectedAt": "2026-09-20T01:16:05.092Z",
       "cabin": "prestige"
     },
     {
@@ -20,7 +20,29 @@
       "destinationName": "파리",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:22:54.530Z",
+      "collectedAt": "2026-09-20T01:16:05.092Z",
+      "cabin": "first"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "CDG",
+      "destinationName": "파리",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:16:05.092Z",
+      "cabin": "prestige"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "CDG",
+      "destinationName": "파리",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:16:05.092Z",
       "cabin": "first"
     },
     {
@@ -31,7 +53,7 @@
       "destinationName": "런던",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:24:59.502Z",
+      "collectedAt": "2026-09-20T01:18:06.226Z",
       "cabin": "prestige"
     },
     {
@@ -42,8 +64,52 @@
       "destinationName": "런던",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:24:59.502Z",
+      "collectedAt": "2026-09-20T01:18:06.226Z",
       "cabin": "first"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "LHR",
+      "destinationName": "런던",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:18:06.226Z",
+      "cabin": "prestige"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "LHR",
+      "destinationName": "런던",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:18:06.226Z",
+      "cabin": "first"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "MXP",
+      "destinationName": "밀라노",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:20:07.710Z",
+      "cabin": "prestige"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "FCO",
+      "destinationName": "로마",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:26:10.691Z",
+      "cabin": "prestige"
     },
     {
       "watchId": "default",
@@ -53,7 +119,7 @@
       "destinationName": "마드리드",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:35:10.409Z",
+      "collectedAt": "2026-09-20T01:28:15.801Z",
       "cabin": "prestige"
     },
     {
@@ -64,7 +130,18 @@
       "destinationName": "뉴욕",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:37:14.986Z",
+      "collectedAt": "2026-09-20T01:30:19.929Z",
+      "cabin": "prestige"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "JFK",
+      "destinationName": "뉴욕",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:30:19.929Z",
       "cabin": "prestige"
     },
     {
@@ -75,7 +152,7 @@
       "destinationName": "로스앤젤레스",
       "date": "2026-10-10",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:37:25.453Z",
+      "collectedAt": "2026-09-20T01:30:30.575Z",
       "cabin": "prestige"
     },
     {
@@ -86,7 +163,18 @@
       "destinationName": "로스앤젤레스",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:39:21.289Z",
+      "collectedAt": "2026-09-20T01:32:22.625Z",
+      "cabin": "prestige"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "LAX",
+      "destinationName": "로스앤젤레스",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:32:22.625Z",
       "cabin": "prestige"
     },
     {
@@ -97,7 +185,7 @@
       "destinationName": "샌프란시스코",
       "date": "2027-08-03",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:41:14.769Z",
+      "collectedAt": "2026-09-20T01:34:14.446Z",
       "cabin": "prestige"
     },
     {
@@ -108,7 +196,18 @@
       "destinationName": "샌프란시스코",
       "date": "2027-09-14",
       "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
-      "collectedAt": "2026-09-19T22:41:25.297Z",
+      "collectedAt": "2026-09-20T01:34:24.898Z",
+      "cabin": "prestige"
+    },
+    {
+      "watchId": "default",
+      "program": "korean-air",
+      "origin": "ICN",
+      "destination": "SFO",
+      "destinationName": "샌프란시스코",
+      "date": "2027-09-15",
+      "sourceUpdatedAt": "2026-09-19T23:00:00+09:00",
+      "collectedAt": "2026-09-20T01:34:24.898Z",
       "cabin": "prestige"
     }
   ]
