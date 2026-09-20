@@ -233,11 +233,100 @@
     }
   }
 
+  let releaseConfig = { windowDays: 360, releaseHour: 9 };
+  let releaseTimer = null;
+
+  function releaseDateFor(target) {
+    const parsed = new Date(target + 'T09:00:00+09:00');
+    if (Number.isNaN(parsed.getTime())) return null;
+    parsed.setDate(parsed.getDate() - releaseConfig.windowDays);
+    return parsed;
+  }
+
+  /** Says plainly when the airline opens the chosen date, so nobody waits on a
+   *  morning that has already passed or is a year away. */
+  function describeRelease() {
+    const target = $('release-date').value;
+    const note = $('release-when');
+    const opens = target && releaseDateFor(target);
+    if (!opens) { note.textContent = ''; note.dataset.kind = 'info'; return; }
+    const day = new Intl.DateTimeFormat('ko-KR', { timeZone: 'Asia/Seoul', year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' }).format(opens);
+    const hours = (opens.getTime() - Date.now()) / 3_600_000;
+    if (hours < -0.5) {
+      note.textContent = `${day} 오전 ${releaseConfig.releaseHour}시에 이미 열린 날짜예요. 위 검색으로 바로 확인해 주세요.`;
+      note.dataset.kind = 'warn';
+    } else {
+      const left = hours < 24 ? `${Math.max(0, Math.round(hours))}시간 뒤` : `${Math.round(hours / 24)}일 뒤`;
+      note.textContent = `${day} 오전 ${releaseConfig.releaseHour}시에 열려요 — ${left}. 그때 맥이 켜져 있어야 해요.`;
+      note.dataset.kind = 'info';
+    }
+  }
+
+  function renderRelease(job) {
+    const running = Boolean(job) && ['waiting', 'sniping'].includes(job.status);
+    $('release-cancel').hidden = !running;
+    $('release-start').disabled = running;
+    $('release-start').textContent = running ? '대기 중이에요…' : '9시에 잡기';
+    if (!job) return;
+    const kind = job.status === 'found' ? 'success'
+      : ['failed', 'missed', 'interrupted'].includes(job.status) ? 'error'
+      : running ? 'busy' : 'info';
+    const detail = (job.flights ?? []).join(' · ');
+    $('release-status').dataset.kind = kind;
+    $('release-status-text').textContent = job.message + (detail ? ` (${detail})` : '');
+  }
+
+  async function loadRelease() {
+    try {
+      const data = await api('/api/release-watch');
+      releaseConfig = { windowDays: data.windowDays, releaseHour: data.releaseHour };
+      renderRelease(data.job);
+      describeRelease();
+    } catch { /* the panel simply stays as it is */ }
+  }
+
+  async function startRelease(event) {
+    event.preventDefault();
+    try {
+      $('release-start').disabled = true;
+      const data = await api('/api/release-watch/start', {
+        method: 'POST',
+        body: JSON.stringify({
+          origin: $('release-origin').value.trim().toUpperCase(),
+          destination: $('release-destination').value.trim().toUpperCase(),
+          date: $('release-date').value,
+          cabin: $('release-cabin').value,
+        }),
+      });
+      renderRelease(data.job);
+    } catch (error) {
+      $('release-status').dataset.kind = 'error';
+      $('release-status-text').textContent = error.message;
+      $('release-start').disabled = false;
+    }
+  }
+
+  async function cancelRelease() {
+    try {
+      await api('/api/release-watch/cancel', { method: 'POST', body: JSON.stringify({}) });
+      void loadRelease();
+    } catch (error) {
+      $('release-status').dataset.kind = 'error';
+      $('release-status-text').textContent = error.message;
+    }
+  }
+
   async function init() {
     $('watch-form').addEventListener('submit', saveWatch);
     $('watch-sync').addEventListener('click', syncWatches);
     $('watch-cancel-edit').addEventListener('click', () => fillForm(null));
     $('watch-refresh').addEventListener('click', () => { void loadWatches(); void loadCloud(); });
+    $('release-form').addEventListener('submit', startRelease);
+    $('release-cancel').addEventListener('click', cancelRelease);
+    $('release-date').addEventListener('change', describeRelease);
+    // A standby runs for hours, so its state is polled rather than shown once.
+    releaseTimer = setInterval(() => void loadRelease(), 15000);
+    void loadRelease();
     try {
       const routes = await api('/api/routes');
       catalog = { list: routes.airports };
@@ -253,5 +342,5 @@
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else void init();
-  window.WatchesUI = { reload: () => { void loadWatches(); void loadCloud(); } };
+  window.WatchesUI = { reload: () => { void loadWatches(); void loadCloud(); void loadRelease(); } };
 })();

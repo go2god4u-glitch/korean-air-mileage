@@ -69,7 +69,7 @@ async function chooseDate(page: Page, date: string): Promise<void> {
 
 /** Asks the airline's own booking search whether this exact date still has the
  *  cabin available. Returns the live answer, never a cached one. */
-export async function searchKoreanAirAward(page: Page, query: AwardQuery, cancelled: () => boolean) {
+export async function searchKoreanAirAward(page: Page, query: AwardQuery & { hold?: boolean }, cancelled: () => boolean) {
   const { origin, destination, date, cabin } = query;
   try {
     if (!CABIN_LABELS[cabin]) throw new Error('INVALID_QUERY');
@@ -113,11 +113,24 @@ export async function searchKoreanAirAward(page: Page, query: AwardQuery, cancel
     if (hasFlights && !offers.length) throw new Error('STRUCTURE_CHANGED');
     const wanted = offers.filter((offer) => offer.cabin === CABIN_LABELS[cabin]);
     const bookable = wanted.filter((offer) => !offer.soldOut);
+    // `hold` leaves the page on the airline's own booking flow with the cabin
+    // already chosen, so the user only has to confirm. It never pays: selecting a
+    // fare is as far as this goes, and the miles are spent by them, not by us.
+    let held = false;
+    if (query.hold && bookable.length) {
+      const index = offers.findIndex((offer) => offer === bookable[0]);
+      const radio = page.locator(`input[id^="flight-bonus"]`).nth(index);
+      try {
+        await radio.click({ timeout: 10_000 });
+        held = await radio.isChecked();
+      } catch { held = false; }
+    }
     return {
       origin, destination, date, cabin,
       status: bookable.length ? 'available' as const : 'empty' as const,
       flights: bookable.map((offer) => `${offer.flightNumber} ${offer.miles}`),
       soldOut: wanted.length > 0 && !bookable.length,
+      held,
       observedAt: new Date().toISOString(),
     };
   } catch (error) {

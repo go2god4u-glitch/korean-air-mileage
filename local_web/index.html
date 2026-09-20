@@ -91,6 +91,23 @@
           <div class="status" id="watch-status" role="status" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="watch-status-text">준비하고 있어요.</span></div>
         </div>
 
+        <div class="panel search-panel" style="margin-top:24px">
+          <h2 style="margin:0 0 6px;font-size:20px;letter-spacing:-.5px">9시 예매 대기 <span style="font-size:12px;font-weight:600;color:var(--blue);vertical-align:middle">오픈런</span></h2>
+          <p class="program-hint" style="margin:0 0 14px">대한항공은 <strong>매일 오전 9시</strong>에 360일 뒤 날짜를 엽니다. 타려는 날짜를 넣으면 그날 9시에 맞춰 대기하다가, 자리가 나오는 즉시 <strong>좌석까지 선택한 예매 화면</strong>을 띄워드려요. 결제만 직접 하시면 됩니다.</p>
+          <p class="sync-rule">⚠️ 이 기능은 <strong>이 맥에서만</strong> 작동합니다 — 실시간 좌석 확인에 대한항공 로그인이 필요하고, 그 로그인은 조회용 Chrome에만 있어요. 9시에 맥이 켜져 있고 프로그램이 실행 중이어야 합니다.</p>
+          <form id="release-form">
+            <div class="scan-block scan-row">
+              <label class="field"><span class="field-label">출발</span><input id="release-origin" class="scan-input" style="max-width:120px;margin-top:0" value="ICN" maxlength="3" autocomplete="off" spellcheck="false"></label>
+              <label class="field"><span class="field-label">도착</span><input id="release-destination" class="scan-input" style="max-width:120px;margin-top:0" maxlength="3" placeholder="LHR" autocomplete="off" spellcheck="false"></label>
+              <label class="field"><span class="field-label">타려는 날짜</span><input type="date" id="release-date" class="scan-date" required></label>
+              <label class="field"><span class="field-label">좌석 등급</span><select id="release-cabin" class="scan-date"><option value="business">비즈니스</option><option value="first">일등석</option></select></label>
+            </div>
+            <p id="release-when" class="scan-estimate"></p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="primary" id="release-start" type="submit">9시에 잡기</button><button class="provider-link" id="release-cancel" type="button" style="margin-top:0;border:0;background:#77879b" hidden>대기 멈추기</button></div>
+          </form>
+          <div class="status" id="release-status" role="status" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="release-status-text">타려는 날짜를 넣어 주세요.</span></div>
+        </div>
+
         <div class="results-header" style="margin-top:28px"><div><h2 style="font-size:18px;letter-spacing:-.4px;margin:0">신청한 알림</h2><p style="margin:3px 0 0;font-size:12px;color:var(--muted)">수정·삭제한 뒤에는 GitHub에 반영해야 자동 조회에 적용돼요.</p></div><button type="button" class="source-link" id="watch-refresh" style="border:0;background:transparent">새로고침 ↻</button></div>
         <div id="watch-list"></div>
         <div class="panel search-panel" style="margin-top:18px">

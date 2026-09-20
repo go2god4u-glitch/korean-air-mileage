@@ -19,9 +19,11 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
+from urllib.error import URLError
 import uuid
 import webbrowser
 from sas_store import SasStore
@@ -1295,6 +1297,187 @@ class BusinessScanService:
                 self.cancelled.discard(job_id)
 
 
+RELEASE_HOUR = 9  # Korean Air opens the date 360 days out at 09:00 KST.
+RELEASE_WINDOW_DAYS = 360
+RELEASE_PATH = ROOT / "config" / "release-watch.json"
+
+
+def release_date_for(target, window=RELEASE_WINDOW_DAYS):
+    """The morning a target date becomes bookable."""
+    return target - timedelta(days=window)
+
+
+def validate_release_request(raw, today=None):
+    if not isinstance(raw, dict):
+        raise AppError("INVALID_INPUT", "예매 대기 조건을 확인해 주세요.")
+    params = {}
+    for field, label in (("origin", "출발지"), ("destination", "도착지")):
+        value = str(raw.get(field, "")).strip().upper()
+        if not re.fullmatch(r"[A-Z]{3}", value):
+            raise AppError("INVALID_AIRPORT", "%s 공항 코드를 확인해 주세요." % label)
+        params[field] = value
+    if params["origin"] == params["destination"]:
+        raise AppError("SAME_AIRPORT", "출발지와 도착지를 다르게 선택해 주세요.")
+    value = raw.get("date")
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+        raise AppError("INVALID_DATE", "타려는 날짜를 선택해 주세요.")
+    try:
+        target = date.fromisoformat(value)
+    except ValueError:
+        raise AppError("INVALID_DATE", "날짜를 올바르게 선택해 주세요.")
+    cabin = raw.get("cabin", "business")
+    if cabin not in ("business", "first"):
+        raise AppError("INVALID_CABIN", "비즈니스 또는 일등석을 선택해 주세요.")
+
+    today = today or datetime.now(SEOUL).date()
+    opens_on = release_date_for(target)
+    if opens_on < today:
+        raise AppError("ALREADY_OPEN", "이미 예매가 열린 날짜예요. 바로 검색해서 확인해 주세요.")
+    params.update(date=value, cabin=cabin, opensOn=opens_on.isoformat(),
+                  opensAt=datetime.combine(opens_on, dtime(RELEASE_HOUR), SEOUL).isoformat())
+    return params
+
+
+class ReleaseWatchService:
+    """Waits for the 09:00 KST release of one date and gets to the booking screen.
+
+    Seats for a newly opened day are taken within minutes, so this starts polling
+    just before the hour and keeps asking until the airline answers. It selects the
+    fare and stops there: paying is the user's to do."""
+
+    POLL_SECONDS = 3
+    LEAD_SECONDS = 20
+    GIVE_UP_SECONDS = 15 * 60
+
+    def __init__(self, award_service, root=ROOT):
+        self.award = award_service
+        self.root = Path(root)
+        self.lock = threading.RLock()
+        self.job = None
+        self.thread = None
+        self.stop_flag = threading.Event()
+
+    def read(self):
+        with self.lock:
+            if self.job:
+                return dict(self.job)
+        # A standby that was waiting when the program stopped is not still waiting.
+        # Saying so is what keeps someone from trusting it through 9am.
+        try:
+            saved = json.loads((self.root / "data" / "local" / "release-watch-job.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(saved, dict):
+            return None
+        if saved.get("status") in ("waiting", "sniping"):
+            saved["status"] = "interrupted"
+            saved["message"] = ("프로그램이 다시 시작되어 예매 대기가 끊겼어요. "
+                                "9시에 잡으려면 다시 신청해 주세요.")
+        return saved
+
+    def update(self, **fields):
+        with self.lock:
+            if self.job:
+                self.job.update(fields)
+                snapshot = dict(self.job)
+            else:
+                snapshot = None
+        if snapshot:
+            try:
+                self.award.sas.store.root  # noqa: B018 - touch to keep the root resolved
+            except Exception:
+                pass
+            try:
+                (self.root / "data" / "local").mkdir(parents=True, exist_ok=True)
+                (self.root / "data" / "local" / "release-watch-job.json").write_text(
+                    json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+            except OSError:
+                pass
+
+    def start(self, raw):
+        params = validate_release_request(raw)
+        with self.lock:
+            if self.thread and self.thread.is_alive():
+                raise AppError("BUSY", "이미 예매 대기 중이에요. 먼저 멈춰 주세요.", 409)
+            self.stop_flag.clear()
+            self.job = dict(params, status="waiting", attempts=0,
+                            message="%s 오전 9시에 %s 자리가 열리면 바로 잡을게요." % (params["opensOn"], params["date"]),
+                            startedAt=utc_now().isoformat())
+            self.thread = threading.Thread(target=self._run, args=(dict(params),), daemon=True)
+            self.thread.start()
+            return dict(self.job)
+
+    def cancel(self):
+        self.stop_flag.set()
+        with self.lock:
+            if self.job and self.job.get("status") in ("waiting", "sniping"):
+                self.job.update(status="cancelled", message="예매 대기를 멈췄어요.")
+        self.update()
+        return {"status": "cancelled"}
+
+    def _run(self, params):
+        try:
+            opens_at = datetime.fromisoformat(params["opensAt"]) - timedelta(seconds=self.LEAD_SECONDS)
+            while not self.stop_flag.is_set():
+                remaining = (opens_at - datetime.now(SEOUL)).total_seconds()
+                if remaining <= 0:
+                    break
+                self.update(status="waiting", message="%s 오전 9시까지 %d분 남았어요." % (
+                    params["opensOn"], max(1, int(remaining // 60))))
+                time.sleep(min(remaining, 30))
+            if self.stop_flag.is_set():
+                return
+
+            deadline = time.monotonic() + self.GIVE_UP_SECONDS
+            attempts = 0
+            while not self.stop_flag.is_set() and time.monotonic() < deadline:
+                attempts += 1
+                self.update(status="sniping", attempts=attempts,
+                            message="자리를 확인하고 있어요 (%d번째)." % attempts)
+                try:
+                    result = self.award.worker.call(
+                        "verify", {"origin": params["origin"], "destination": params["destination"],
+                                   "date": params["date"], "cabin": params["cabin"], "hold": True},
+                        program="korean-air", timeout=120)
+                except SasError as error:
+                    self.update(message="조회에 실패했어요 (%s). 다시 시도해요." % error.code)
+                    time.sleep(self.POLL_SECONDS)
+                    continue
+                if result.get("status") == "available":
+                    self.update(status="found", flights=result.get("flights") or [],
+                                held=bool(result.get("held")), foundAt=utc_now().isoformat(),
+                                message=("자리를 찾았어요! 좌석까지 선택해 두었으니 Chrome에서 결제만 진행해 주세요."
+                                         if result.get("held") else
+                                         "자리를 찾았어요! Chrome 예매 화면에서 좌석을 선택하고 결제해 주세요."))
+                    self._notify(params, result)
+                    return
+                if result.get("code") in RESTRICTIONS:
+                    self.update(status="failed", message="대한항공이 조회를 제한하거나 로그인이 풀렸어요. 로그인을 확인해 주세요.")
+                    return
+                time.sleep(self.POLL_SECONDS)
+            if not self.stop_flag.is_set():
+                self.update(status="missed",
+                            message="9시 이후 %d분 동안 %s 자리를 찾지 못했어요." % (self.GIVE_UP_SECONDS // 60, params["date"]))
+        except Exception:
+            self.update(status="failed", message="예매 대기 중 문제가 생겼어요.")
+
+    def _notify(self, params, result):
+        token, chat = os.environ.get("TELEGRAM_BOT_TOKEN"), os.environ.get("TELEGRAM_CHAT_ID")
+        if not token or not chat:
+            return
+        text = "🎯 %s→%s %s %s 자리가 열렸어요!\n%s\n\nChrome 예매 화면이 열려 있어요 — 결제만 진행해 주세요." % (
+            params["origin"], params["destination"], params["date"],
+            "비즈니스" if params["cabin"] == "business" else "일등석",
+            "\n".join(result.get("flights") or []))
+        try:
+            request = Request("https://api.telegram.org/bot%s/sendMessage" % token,
+                              data=json.dumps({"chat_id": chat, "text": text}).encode("utf-8"),
+                              headers={"Content-Type": "application/json"})
+            urlopen(request, timeout=15).read()
+        except (URLError, OSError, ValueError):
+            pass
+
+
 def app_config():
     today = datetime.now(SEOUL).date()
     minimum, maximum = month_bounds(today)
@@ -1313,6 +1496,7 @@ class LocalServer(ThreadingHTTPServer):
         self.sas_service = SasService(self.service.store.root, self.sas_store)
         self.award_service = AwardService(self.service.store.root, self.sas_service)
         self.business_scan_service = BusinessScanService(self.service, self.award_service)
+        self.release_watch_service = ReleaseWatchService(self.award_service)
         super().__init__(address, Handler)
 
 
@@ -1392,6 +1576,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.respond(json.loads((ROOT / "config" / "flight-hours.json").read_text(encoding="utf-8")))
                 except (OSError, ValueError):
                     raise AppError("FLIGHT_HOURS_UNAVAILABLE", "비행시간 정보를 불러오지 못했어요.", 503)
+            elif target.path == "/api/release-watch":
+                self.respond({"job": self.server.release_watch_service.read(),
+                              "today": datetime.now(SEOUL).date().isoformat(),
+                              "windowDays": RELEASE_WINDOW_DAYS, "releaseHour": RELEASE_HOUR})
             elif target.path == "/api/watches":
                 self.respond(dict(read_watches(), sync=watches_sync_state()))
             elif target.path == "/api/watches/cloud":
@@ -1419,7 +1607,8 @@ class Handler(BaseHTTPRequestHandler):
             self.allowed(mutation=True)
             if self.path not in ("/api/search", "/api/business-scan", "/api/business-scan/cancel",
                                  "/api/watches/save", "/api/watches/delete", "/api/watches/sync",
-                                 "/api/open-booking", "/api/open-airline", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
+                                 "/api/open-booking", "/api/open-airline",
+                                 "/api/release-watch/start", "/api/release-watch/cancel", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
                 raise AppError("NOT_FOUND", "요청한 기능을 찾을 수 없어요.", 404)
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
                 raise AppError("INVALID_INPUT", "검색 조건을 확인해 주세요.", 415)
@@ -1455,6 +1644,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/business-scan":
                 self.respond({"jobId": self.server.business_scan_service.start(payload)}, 202)
+                return
+            if self.path == "/api/release-watch/start":
+                self.respond({"job": self.server.release_watch_service.start(payload)}, 202)
+                return
+            if self.path == "/api/release-watch/cancel":
+                self.respond(self.server.release_watch_service.cancel())
                 return
             if self.path == "/api/open-booking":
                 booking = booking_url(payload)
