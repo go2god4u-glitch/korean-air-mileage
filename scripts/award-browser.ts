@@ -32,7 +32,20 @@ async function ensure(program:string,navigate=true){
   if(!native){native=await openNativeChrome(resolve('data/partner-chrome-profile'),{keepRunning:true});native.context.on('close',()=>{native=null;pages.clear();generation++;});}
   let p=pages.get(program);if(!p||p.isClosed()){p=await native.context.newPage();pages.set(program,p);if(navigate)await p.goto(urls[program],{waitUntil:'domcontentloaded',timeout:45000});}return p;
 }
-async function state(program:string){const p=pages.get(program);if(!p||p.isClosed())return {state:'closed'};const body=await p.locator('body').innerText({timeout:2000});if(sasRestriction(body))return {state:'restricted'};if(/\/login|viewLogin/.test(p.url()))return {state:'login_required'};const authenticated=await p.getByRole('link',{name:/로그아웃|log\s*out/i}).first().isVisible() || await p.getByRole('button',{name:/로그아웃|log\s*out/i}).first().isVisible();return {state:'ready',authenticated};}
+// These pages redirect to the airline's login when the session is gone, so
+// staying on them is the proof of being signed in. The 로그아웃 link only appears
+// behind a menu on some layouts, and requiring it reported a working session as
+// expired — a false alarm that would be read as "you cannot book" at 09:00.
+async function state(program:string){
+  const p=pages.get(program);if(!p||p.isClosed())return {state:'closed'};
+  const body=await p.locator('body').innerText({timeout:2000});
+  if(sasRestriction(body))return {state:'restricted'};
+  if(/\/login|viewLogin/.test(p.url()))return {state:'login_required'};
+  const visibleLogout=await p.getByRole('link',{name:/로그아웃|log\s*out/i}).first().isVisible().catch(()=>false)
+    || await p.getByRole('button',{name:/로그아웃|log\s*out/i}).first().isVisible().catch(()=>false);
+  const onOwnPage=/koreanair\.com\/(booking|payment)|flyasiana\.com\/I\//.test(p.url());
+  return {state:'ready',authenticated:visibleLogout||onOwnPage};
+}
 async function run(c:any){
   if(!urls[c.program])return {status:'failed',code:'INVALID_QUERY'};
   if(c.action==='status')return monthProgram===c.program?{state:'searching'}:state(c.program);
@@ -108,7 +121,15 @@ async function run(c:any){
         return {status:'failed',code:'INVALID_QUERY'};
       }finally{await p.close().catch(()=>{});}
     }
-    const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login');if(c.action==='confirm-login'){if((await state(c.program)).state==='restricted')return {state:'restricted'};await p.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});for(let i=0;i<20;i++){const result=await state(c.program);if(result.state!=='ready'||result.authenticated||c.program==='asiana-club')return result;await p.waitForTimeout(300);}return state(c.program);}if(c.action==='open'){await p.bringToFront();return state(c.program);}if((await state(c.program)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
+    const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login');if(c.action==='confirm-login'){
+      if((await state(c.program)).state==='restricted')return {state:'restricted'};
+      await p.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});
+      // The bounce to the login page can take several seconds. Answering before it
+      // lands calls an expired session signed in, which is the worse mistake: it
+      // is believed until 09:00, when there is no time left to sign in.
+      await p.waitForURL(/\/login|viewLogin/,{timeout:9000}).catch(()=>{});
+      return state(c.program);
+    }if(c.action==='open'){await p.bringToFront();return state(c.program);}if((await state(c.program)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
     if(c.program==='asiana-club')return await searchAsiana(p,c.query,()=>generation!==initial);
     if(c.program==='skyteam')return await searchSky(p,c.query,()=>generation!==initial);
     if(c.program==='star-alliance')return await searchStar(p,c.query,()=>generation!==initial);
