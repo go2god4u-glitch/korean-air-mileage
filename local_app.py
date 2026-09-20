@@ -1134,25 +1134,23 @@ class BusinessScanService:
                 return found
         raise AppError("COLLECTION_TIMEOUT", "아시아나 조회가 오래 걸려 중단했어요.")
 
-    def _verify_live(self, job_id, hits):
-        """Asks the airline's own booking search about each found date.
+    def _verify_live(self, job_id, hits, pending, refused):
+        """Asks the airline's own booking search about the dates just found.
 
-        The public calendar is a once-daily snapshot; this is the live answer. It
-        needs the logged-in Chrome, so when that is unavailable the findings keep
-        their calendar result and say the live check did not run — a seat we could
-        not re-check is not a seat we know is gone."""
-        checkable = list(hits)
-        refused = set()
-        if not checkable:
-            return hits
-        for index, hit in enumerate(checkable):
+        Runs as each leg finishes rather than at the end, so a date is confirmed
+        or dropped while the sweep is still going. The public calendar is a
+        once-daily snapshot; this is the live answer. It needs the logged-in
+        Chrome, so when that is unavailable the findings keep their calendar
+        result and say the live check did not run — a seat we could not re-check
+        is not a seat we know is gone."""
+        for hit in pending:
             if job_id in self.cancelled:
                 break
             if hit["program"] in refused:
                 hit.setdefault("live", "unchecked")
                 continue
-            self.update(job_id, message="실시간 확인 중이에요 · %s→%s %s (%d/%d)" % (
-                hit["origin"], hit["destination"], hit["date"], index + 1, len(checkable)))
+            self.update(job_id, message="실시간 확인 중이에요 · %s→%s %s" % (
+                hit["origin"], hit["destination"], hit["date"]))
             cabin = "first" if "first" in hit.get("cabins", []) else "business"
             try:
                 result = self.award.worker.call(
@@ -1161,6 +1159,7 @@ class BusinessScanService:
                     program=hit["program"], timeout=180)
             except SasError as error:
                 hit["live"], hit["liveCode"] = "unchecked", error.code
+                self.update(job_id, hits=list(hits))
                 continue
             status = result.get("status")
             if status == "available":
@@ -1170,17 +1169,12 @@ class BusinessScanService:
                 hit["live"] = "gone"
             else:
                 hit["live"], hit["liveCode"] = "unchecked", result.get("code") or "SEARCH_FAILED"
+                # One airline refusing says nothing about the other, so only that
+                # airline's later checks are retired.
                 if hit["liveCode"] in ("LOGIN_REQUIRED", "ACCESS_RESTRICTED"):
-                    # One airline refusing says nothing about the other, so only
-                    # that airline's remaining checks are retired.
-                    for remaining in checkable[index + 1:]:
-                        if remaining["program"] == hit["program"]:
-                            remaining["live"], remaining["liveCode"] = "unchecked", hit["liveCode"]
                     refused.add(hit["program"])
             hit["liveCheckedAt"] = utc_now().isoformat()
             self.update(job_id, hits=list(hits))
-        self.update(job_id, hits=list(hits))
-        return hits
 
     def _run(self, job_id, legs, programs):
         hits, failures, completed = [], [], 0
@@ -1191,6 +1185,8 @@ class BusinessScanService:
             unsupported = self.unsupported_routes()
             skipped = []
             restricted_programs = set()
+            # Airlines that refused a live check; their later dates stay unchecked.
+            refused = set()
             for leg in legs:
                 for program in programs:
                     if job_id in self.cancelled:
@@ -1239,16 +1235,18 @@ class BusinessScanService:
                         self.update(job_id, completed=completed, failures=list(failures), skipped=list(skipped))
                         continue
                     found_at = utc_now().isoformat()
-                    for found in dates:
-                        hits.append({"program": program, "origin": leg["origin"], "destination": leg["destination"],
-                                     "month": leg["month"], "date": found["date"],
-                                     "cabins": found["cabins"], "foundAt": found_at,
-                                     "sourceUpdatedAt": found.get("sourceUpdatedAt"),
-                                     "collectedAt": found.get("collectedAt"),
-                                     "liveFlights": found.get("liveFlights")})
+                    fresh = [{"program": program, "origin": leg["origin"], "destination": leg["destination"],
+                              "month": leg["month"], "date": found["date"],
+                              "cabins": found["cabins"], "foundAt": found_at,
+                              "sourceUpdatedAt": found.get("sourceUpdatedAt"),
+                              "collectedAt": found.get("collectedAt"),
+                              "liveFlights": found.get("liveFlights")} for found in dates]
+                    hits.extend(fresh)
                     completed += 1
                     self.update(job_id, completed=completed, hits=list(hits))
-            hits = self._verify_live(job_id, hits)
+                    # Confirm or drop these dates now, while the sweep continues,
+                    # so the screen never shows a seat that is already gone.
+                    self._verify_live(job_id, hits, fresh, refused)
             live = len([h for h in hits if h.get("live") == "available"])
             gone = len([h for h in hits if h.get("live") == "gone"])
             blocked = {h.get("liveCode") for h in hits if h.get("live") == "unchecked"}
