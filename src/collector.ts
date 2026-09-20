@@ -46,7 +46,8 @@ export function validateFutureMonth(month: string, now = new Date()): void {
   const currentDay = Date.parse(`${today}T00:00:00+09:00`);
   // A month qualifies once its first day is bookable. Later days in it may still
   // be past the horizon; those are recorded as NOT_YET_OPEN, never as no seats.
-  if (start <= currentDay || start > currentDay + 359 * 86_400_000) {
+  // The airline opens the date 360 days out each morning at 09:00 KST.
+  if (start <= currentDay || start > currentDay + 360 * 86_400_000) {
     throw new CollectionError('MONTH_OUT_OF_RANGE', '향후 360일 안에 시작하는 미래 한 달을 선택하세요.');
   }
 }

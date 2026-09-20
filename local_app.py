@@ -253,7 +253,9 @@ def month_bounds(today=None):
     inside it come back as NOT_YET_OPEN rather than as no seats."""
     today = today or datetime.now(SEOUL).date()
     minimum = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
-    maximum = (today + timedelta(days=359)).replace(day=1)
+    # Korean Air opens one more day each morning at 09:00 KST: the date 360 days
+    # out. Stopping at 359 hid that newly opened day whenever it began a month.
+    maximum = (today + timedelta(days=360)).replace(day=1)
     return minimum.strftime("%Y-%m"), maximum.strftime("%Y-%m")
 
 
