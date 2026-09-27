@@ -25,7 +25,7 @@
       <section class="panel search-panel" id="search-section" aria-label="조회 조건">
         <form id="search-form">
           <div class="program-row"><label class="field"><span class="field-label">마일리지 프로그램</span><select id="program" name="program"><option value="korean-air" selected>대한항공 스카이패스</option><option value="sas-eurobonus">SAS 유로보너스</option><option value="asiana-club">아시아나클럽</option><option value="skyteam">스카이팀 · 대한항공 마일리지</option><option value="star-alliance">스타얼라이언스 · 아시아나 마일리지</option></select></label><p class="program-hint" id="program-hint">대한항공 공개 보너스 좌석 달력을 로그인 없이 조회합니다.</p></div>
-          <div style="margin-bottom:20px"><div id="account-actions" style="display:flex;gap:10px;flex-wrap:wrap"><button type="button" class="provider-link" id="open-account-button" style="margin-top:0;border:0">대한항공 로그인·예약 열기 ↗</button> <button type="button" class="provider-link" id="confirm-account-button" style="margin-top:0;border:0">로그인 완료·확인</button><button id="award-cancel" class="provider-link" type="button" style="margin-top:0;border:0" hidden disabled>조회 중단</button></div><p class="program-hint" style="margin:8px 0 0" id="account-note">조회용 Chrome에서 로그인합니다. 공개 좌석 달력 조회에는 로그인이 필요 없습니다.</p><p class="program-hint" id="account-status" role="status" aria-live="polite" style="margin:8px 0 0"></p></div>
+          <div style="margin-bottom:20px"><div id="account-actions" style="display:flex;gap:10px;flex-wrap:wrap"><label style="display:inline-flex;align-items:center;gap:7px;font-size:13px;color:#3a5570">누구 계정<select id="account-pick" class="scan-date" style="height:38px"><option value="default">공용 (조회용)</option><option value="main">나 (main)</option><option value="second">배우자 (second)</option></select></label><button type="button" class="provider-link" id="open-account-button" style="margin-top:0;border:0">대한항공 로그인·예약 열기 ↗</button> <button type="button" class="provider-link" id="confirm-account-button" style="margin-top:0;border:0">로그인 완료·확인</button><button id="award-cancel" class="provider-link" type="button" style="margin-top:0;border:0" hidden disabled>조회 중단</button></div><p class="program-hint" style="margin:8px 0 0" id="account-note">조회용 Chrome에서 로그인합니다. 공개 좌석 달력 조회에는 로그인이 필요 없습니다.</p><p class="program-hint" id="account-status" role="status" aria-live="polite" style="margin:8px 0 0"></p></div>
           <div id="korean-search-controls">
           <div class="form-top"><fieldset class="trip-options"><legend class="sr-only">여정 종류</legend><label><input type="radio" name="tripType" value="ONE_WAY" checked><span>편도</span></label><label><input type="radio" name="tripType" value="ROUND_TRIP"><span>왕복</span></label></fieldset><span class="form-hint">조건을 바꾸면 저장된 결과를 보여드려요.</span></div>
           <div class="search-grid">
@@ -553,12 +553,27 @@
       writeAirport('origin',destination); writeAirport('destination',origin); closeAirport('origin'); closeAirport('destination');
       updateRouteNote(); scheduleCache();
     });
-    $('confirm-account-button').addEventListener('click',()=>window.AwardLocal?.confirmLogin(fields.program.value));
+    const pickedAccount = () => $('account-pick').value || 'default';
+    $('confirm-account-button').addEventListener('click', async () => {
+      if(!koreanAirSelected()) { window.AwardLocal?.confirmLogin(fields.program.value); return; }
+      const button = $('confirm-account-button'); button.disabled = true;
+      $('account-status').textContent = '로그인 상태를 확인하고 있어요.';
+      try {
+        const { browser } = await api('/api/awards/confirm-login',{method:'POST',body:JSON.stringify({program:'korean-air',account:pickedAccount()})});
+        // Being on the booking page is not proof of being signed in, so only the
+        // bounce-tested answer is reported here.
+        $('account-status').textContent = browser?.authenticated
+          ? `'${pickedAccount()}' 계정은 로그인되어 있어요. 9시 예매 대기를 걸 수 있어요.`
+          : `'${pickedAccount()}' 계정은 아직 로그인되지 않았어요. 위 '로그인·예약 열기'로 그 계정 창에서 로그인해 주세요.`;
+      }
+      catch(error) { $('account-status').textContent = error.message; }
+      finally { button.disabled = false; }
+    });
     $('open-account-button').addEventListener('click', async () => {
       if(!koreanAirSelected()) { await window.AwardLocal?.open(); return; }
       const button = $('open-account-button'); button.disabled = true;
       $('account-status').textContent = 'Chrome을 열고 있어요.';
-      try { const result = await api('/api/awards/open',{method:'POST',body:JSON.stringify({program:'korean-air'})}); $('account-status').textContent = '대한항공과 스카이팀이 로그인 상태를 함께 사용하는 조회 창을 열었습니다.'; }
+      try { await api('/api/awards/open',{method:'POST',body:JSON.stringify({program:'korean-air',account:pickedAccount()})}); $('account-status').textContent = `'${pickedAccount()}' 계정의 Chrome 창을 열었어요. 이 창에서 그 사람의 대한항공 계정으로 로그인해 주세요. 사람마다 창이 따로입니다.`; }
       catch(error) { $('account-status').textContent = error.message; }
       finally { button.disabled = false; }
     });

@@ -64,16 +64,20 @@ async function scratchTab(ctx:BrowserContext,key:string){
   scratch.set(key,tab);
   return tab;
 }
-async function ensure(program:string,navigate=true){
-  if(!native){native=await openNativeChrome(resolve('data/partner-chrome-profile'),{keepRunning:true});native.context.on('close',()=>{native=null;pages.clear();generation++;});}
-  let p=pages.get(program);if(!p||p.isClosed()){p=await native.context.newPage();pages.set(program,p);if(navigate)await p.goto(urls[program],{waitUntil:'domcontentloaded',timeout:45000});}return p;
+function pageKey(program:string,id:string){return id==='default'?program:`${id}|${program}`;}
+// Signing in is per account, not per program: the husband's and the wife's Chrome
+// profiles are different browsers, and a login in one is not a login in the other.
+async function ensure(program:string,navigate=true,id='default'){
+  const ctx=await accountContext(id);
+  const key=pageKey(program,id);
+  let p=pages.get(key);if(!p||p.isClosed()){p=await ctx.newPage();pages.set(key,p);if(navigate)await p.goto(urls[program],{waitUntil:'domcontentloaded',timeout:45000});}return p;
 }
 // These pages redirect to the airline's login when the session is gone, so
 // staying on them is the proof of being signed in. The 로그아웃 link only appears
 // behind a menu on some layouts, and requiring it reported a working session as
 // expired — a false alarm that would be read as "you cannot book" at 09:00.
-async function state(program:string){
-  const p=pages.get(program);if(!p||p.isClosed())return {state:'closed'};
+async function state(program:string,id='default'){
+  const p=pages.get(pageKey(program,id));if(!p||p.isClosed())return {state:'closed'};
   const body=await p.locator('body').innerText({timeout:2000});
   if(sasRestriction(body))return {state:'restricted'};
   if(/\/login|viewLogin/.test(p.url()))return {state:'login_required'};
@@ -84,7 +88,7 @@ async function state(program:string){
 }
 async function run(c:any){
   if(!urls[c.program])return {status:'failed',code:'INVALID_QUERY'};
-  if(c.action==='status')return monthProgram===c.program?{state:'searching'}:state(c.program);
+  if(c.action==='status')return monthProgram===c.program?{state:'searching'}:state(c.program,accountId(c.query?.account));
   if(c.action==='cancel'){generation++;return {state:'cancelled'};}
   // Standby arming and firing run on their own tabs and own account profiles, so
   // several can proceed at once; everything else still takes the single lane.
@@ -231,15 +235,16 @@ async function run(c:any){
       if(c.program==='asiana-club')return await searchAsianaAward(p,c.query,()=>generation!==initial);
       return {status:'failed',code:'INVALID_QUERY'};
     }
-    const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login');if(c.action==='confirm-login'){
-      if((await state(c.program)).state==='restricted')return {state:'restricted'};
+    const loginId=accountId(c.query?.account);
+    const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login',loginId);if(c.action==='confirm-login'){
+      if((await state(c.program,loginId)).state==='restricted')return {state:'restricted',account:loginId};
       await p.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});
       // The bounce to the login page can take several seconds. Answering before it
       // lands calls an expired session signed in, which is the worse mistake: it
       // is believed until 09:00, when there is no time left to sign in.
       await p.waitForURL(/\/login|viewLogin/,{timeout:9000}).catch(()=>{});
-      return state(c.program);
-    }if(c.action==='open'){await p.bringToFront();return state(c.program);}if((await state(c.program)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
+      return {...await state(c.program,loginId),account:loginId};
+    }if(c.action==='open'){await p.bringToFront();return {...await state(c.program,loginId),account:loginId};}if((await state(c.program,loginId)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
     if(c.program==='asiana-club')return await searchAsiana(p,c.query,()=>generation!==initial);
     if(c.program==='skyteam')return await searchSky(p,c.query,()=>generation!==initial);
     if(c.program==='star-alliance')return await searchStar(p,c.query,()=>generation!==initial);

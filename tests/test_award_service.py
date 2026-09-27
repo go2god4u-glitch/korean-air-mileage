@@ -94,9 +94,23 @@ class LoginConfirmationTests(unittest.TestCase):
         sas.worker.call.return_value={'state':'ready','authenticated':True}
         service.worker.call.return_value={'state':'login_required'}
         self.assertTrue(service.confirm_login('sas-eurobonus')['browser']['authenticated'])
-        sas.worker.call.assert_called_once_with('confirm-login',timeout=75,program='sas-eurobonus')
+        sas.worker.call.assert_called_once_with('confirm-login',{'account':'default'},timeout=75,program='sas-eurobonus')
         self.assertEqual(service.confirm_login('korean-air')['browser']['state'],'login_required')
-        service.worker.call.assert_called_once_with('confirm-login',timeout=75,program='korean-air')
+        service.worker.call.assert_called_once_with('confirm-login',{'account':'default'},timeout=75,program='korean-air')
+
+    def test_each_traveller_is_confirmed_on_their_own_profile(self):
+        # Two people booking together each sign in to their own Chrome: asking the
+        # shared profile would report the second traveller as signed in when they
+        # are not, and that is only discovered at 09:00.
+        sas=SimpleNamespace(thread=None,worker=Mock())
+        service=AwardService('.',sas)
+        service.worker=Mock()
+        service.worker.call.return_value={'state':'ready','authenticated':True,'account':'second'}
+        service.confirm_login('korean-air','second')
+        service.worker.call.assert_called_once_with('confirm-login',{'account':'second'},timeout=75,program='korean-air')
+        service.worker.call.reset_mock()
+        service.open('korean-air','second')
+        service.worker.call.assert_called_once_with('open',{'account':'second'},timeout=60,program='korean-air')
         self.assertEqual(service.jobs,{})
         service.thread=Mock()
         service.thread.is_alive.return_value=True

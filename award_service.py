@@ -58,10 +58,14 @@ class AwardService:
         if program not in PROGRAMS:raise SasError('INVALID_QUERY')
         browser=self.sas.status()['browser'] if program=='sas-eurobonus' else self.worker.call('status',timeout=5,program=program)
         with self.lock:return {'browser':browser,'job':copy.deepcopy(self.jobs.get(program))}
-    def open(self,program):
+    def open(self,program,account='default'):
+        """Open the sign-in window for one account's own Chrome profile.
+
+        Each traveller books from their own account, so a login window that always
+        opened the shared profile left the second account signed out until 09:00."""
         if program not in PROGRAMS+('korean-air',):raise SasError('INVALID_QUERY')
         if program=='sas-eurobonus':return self.sas.open()
-        browser=self.worker.call('open',timeout=60,program=program)
+        browser=self.worker.call('open',{'account':account},timeout=60,program=program)
         if browser.get('status')=='failed':raise SasError(browser.get('code','BROWSER_ERROR'))
         return {'browser':browser}
     def booking_preferences(self):
@@ -99,13 +103,13 @@ class AwardService:
                 'held':bool(result.get('held')),
                 'holdFailure':result.get('holdFailure') or result.get('code') or '',
                 'liveStatus':result.get('status'),'liveFlights':result.get('flights') or []}
-    def confirm_login(self,program):
+    def confirm_login(self,program,account='default'):
         if program not in PROGRAMS+('korean-air',):raise SasError('INVALID_QUERY')
         with self.lock:
             if self.thread and self.thread.is_alive():raise SasError('BUSY')
             if self.sas.thread and self.sas.thread.is_alive():raise SasError('BUSY')
         worker=self.sas.worker if program=='sas-eurobonus' else self.worker
-        browser=worker.call('confirm-login',timeout=75,program=program)
+        browser=worker.call('confirm-login',{'account':account},timeout=75,program=program)
         if browser.get('status')=='failed':raise SasError(browser.get('code','BROWSER_ERROR'))
         return {'browser':browser}
     def start(self,raw):

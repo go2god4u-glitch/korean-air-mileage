@@ -2184,8 +2184,13 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.startswith("/api/awards/"):
                 if not isinstance(payload, dict): raise SasError("INVALID_QUERY")
                 program = payload.get("program")
-                if self.path.endswith("/open"): result = self.server.award_service.open(program)
-                elif self.path.endswith("/confirm-login"): result = self.server.award_service.confirm_login(program)
+                # Which traveller's Chrome to sign in. Validated here rather than
+                # trusted, because it names a profile directory.
+                account = str(payload.get("account", "default")).strip() or "default"
+                if not re.fullmatch(r"[A-Za-z0-9-]{1,24}", account):
+                    raise AppError("INVALID_INPUT", "계정 이름은 영문·숫자·하이픈 24자 이내로 지어 주세요.")
+                if self.path.endswith("/open"): result = self.server.award_service.open(program, account)
+                elif self.path.endswith("/confirm-login"): result = self.server.award_service.confirm_login(program, account)
                 elif self.path.endswith("/cancel"): result = self.server.award_service.cancel(program)
                 else: result = self.server.award_service.start(payload)
                 self.respond(result)
