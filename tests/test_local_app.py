@@ -735,10 +735,68 @@ class TemporaryStoreTests(unittest.TestCase):
                 self.assertEqual(job["error"]["code"], "HANDOFF_FAILED")
 
 
+class KoreanAirPacingTests(unittest.TestCase):
+    """The sweep used to fire one request per route-month with no gap at all, which is
+    what draws an IP block. Every lookup now waits its turn."""
+
+    def setUp(self):
+        reset = mock.patch.object(app, "_korean_air_last", None)
+        reset.start()
+        self.addCleanup(reset.stop)
+        interval = mock.patch.object(app, "KOREAN_AIR_REQUEST_INTERVAL", 0.05)
+        interval.start()
+        self.addCleanup(interval.stop)
+
+    def test_the_first_lookup_does_not_wait(self):
+        started = time.monotonic()
+        app.pace_korean_air()
+        self.assertLess(time.monotonic() - started, 0.05)
+
+    def test_a_following_lookup_waits_its_turn(self):
+        app.pace_korean_air()
+        started = time.monotonic()
+        app.pace_korean_air()
+        self.assertGreaterEqual(time.monotonic() - started, 0.05)
+
+    def test_every_korean_air_lookup_waits_before_the_request_goes_out(self):
+        # collect_leg is the one door to the airline, so a single-route search is
+        # covered by the same gate as a 26-leg sweep. The wait has to come before the
+        # process starts, and after the dependency check, which costs no request.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        executable = root / "node_modules" / "tsx" / "dist" / "cli.mjs"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("// synthetic placeholder; never executed\n", encoding="utf-8")
+        leg = app.legs_for(PARAMS)[0]
+        process = mock.Mock(returncode=0, pid=43210)
+        process.communicate.return_value = (json.dumps({"calendar": synthetic_calendar(leg)}), "")
+        order = []
+        with mock.patch.object(app, "pace_korean_air", side_effect=lambda: order.append("waited")), \
+             mock.patch.object(app.subprocess, "Popen", side_effect=lambda *a, **k: (order.append("requested"), process)[1]), \
+             mock.patch.object(app.shutil, "which", return_value="/synthetic/node"), \
+             mock.patch.object(app, "is_windows", return_value=False):
+            app.collect_leg(leg, root)
+        self.assertEqual(order, ["waited", "requested"])
+
+    def test_a_missing_dependency_costs_no_wait(self):
+        with mock.patch.object(app, "pace_korean_air") as pacer, \
+             mock.patch.object(app.shutil, "which", return_value=None):
+            with self.assertRaises(app.AppError) as raised:
+                app.collect_leg(app.legs_for(PARAMS)[0], tempfile.mkdtemp())
+        self.assertEqual(raised.exception.code, "DEPENDENCIES_MISSING")
+        pacer.assert_not_called()
+
+
 class CollectorProcessContractTests(unittest.TestCase):
     """Validate the process boundary with a fully mocked process, never a browser."""
 
     def setUp(self):
+        # These call collect_leg directly and no request leaves the machine, so the
+        # courtesy interval would only make the suite sleep.
+        interval = mock.patch.object(app, "KOREAN_AIR_REQUEST_INTERVAL", 0)
+        interval.start()
+        self.addCleanup(interval.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
@@ -1003,6 +1061,9 @@ class HandoffStatusChildTests(unittest.TestCase):
 
 class WindowsProcessCompatibilityTests(unittest.TestCase):
     def setUp(self):
+        interval = mock.patch.object(app, "KOREAN_AIR_REQUEST_INTERVAL", 0)
+        interval.start()
+        self.addCleanup(interval.stop)
         self.platform_patch = mock.patch.object(app, "is_windows", return_value=True)
         self.platform_patch.start()
         self.addCleanup(self.platform_patch.stop)

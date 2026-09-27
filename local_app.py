@@ -316,6 +316,13 @@ BUSINESS_SCAN_MAX_LEGS = 2000
 UNSUPPORTED_ROUTE_CODES = {"ROUTE_UNAVAILABLE", "UNSUPPORTED_ROUTE", "AIRPORT_NOT_FOUND"}
 # Seconds to leave between Asiana lookups. Its site refuses rapid repeats.
 ASIANA_REQUEST_INTERVAL = 20
+# The same courtesy for Korean Air. A sweep asks for one route-month per request and
+# used to fire them back to back as fast as the browser could go; dozens of those in a
+# row is what draws an IP block, and a block costs far more than the waiting does.
+# Raise it if blocks keep happening; lower it only if they never do.
+KOREAN_AIR_REQUEST_INTERVAL = 15
+_korean_air_turn = threading.Lock()
+_korean_air_last = None
 
 
 def business_scan_months(start_month, end_month, today=None):
@@ -725,11 +732,29 @@ def stop_owned_process(process):
             continue
 
 
+def pace_korean_air():
+    """Hold the next Korean Air request until the interval has passed.
+
+    The lock is held across the wait on purpose: it makes requests queue rather than
+    all wake at once, so two callers cannot leave at the same moment."""
+    global _korean_air_last
+    with _korean_air_turn:
+        if _korean_air_last is not None:
+            wait = KOREAN_AIR_REQUEST_INTERVAL - (time.monotonic() - _korean_air_last)
+            while wait > 0:
+                time.sleep(min(wait, 1))
+                wait -= 1
+        _korean_air_last = time.monotonic()
+
+
 def collect_leg(leg, root=ROOT):
     node = shutil.which("node")
     tsx = Path(root) / "node_modules" / "tsx" / "dist" / "cli.mjs"
     if not node or not tsx.is_file():
         raise AppError("DEPENDENCIES_MISSING", "조회에 필요한 도구가 아직 설치되지 않았어요. 프로젝트 폴더에서 npm ci를 실행해 주세요.")
+    # Every Korean Air lookup goes through here, so waiting its turn here covers the
+    # sweep and a single-route search alike and neither can skip it.
+    pace_korean_air()
     # Korean Air's edge refuses real headless Chrome, so the collector stays headed
     # and parks its window off-screen instead of interrupting the desktop.
     command = [node, str(tsx), str(Path(root) / "scripts" / "local-collect.ts"),
