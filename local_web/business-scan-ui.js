@@ -160,6 +160,13 @@
         select.append(option);
       }
     }
+    const tomorrow = new Date(Date.now() + 86400000);
+    const horizon = new Date(Date.now() + 360 * 86400000);
+    const iso = (d) => d.toISOString().slice(0, 10);
+    for (const id of ['scan-live-start', 'scan-live-end']) {
+      $(id).min = iso(tomorrow);
+      $(id).max = iso(horizon);
+    }
     $('scan-start-month').value = config.minMonth;
     $('scan-end-month').value = config.minMonth;
   }
@@ -255,6 +262,9 @@
       note.dataset.kind = minutes > 90 ? 'warn' : 'info';
     }
     $('scan-button').disabled = running || !regionCodes.size || !picked.programs.length;
+    // The live sweep draws its routes from the same pickers, so its estimate has to
+    // follow them rather than only its own two date inputs.
+    updateLiveEstimate();
   }
 
   /** Its own notice, not the scan status line: a running sweep overwrites that
@@ -408,6 +418,7 @@
         currentJobId = null;
         $('scan-cancel').hidden = true;
         $('scan-button').textContent = '비즈니스석 검색';
+      $('scan-live-button').textContent = '실시간으로 정확히 확인';
         setStatus(`${job.message} (${job.completed}/${job.total})`, 'error');
         renderHits(job);
         updateEstimate();
@@ -430,6 +441,7 @@
       currentJobId = null;
       $('scan-cancel').hidden = true;
       $('scan-button').textContent = '비즈니스석 검색';
+      $('scan-live-button').textContent = '실시간으로 정확히 확인';
       const notes = [];
       if ((job.skipped || []).length) {
         const routes = job.skipped.slice(0, 6).map((key) => {
@@ -454,6 +466,7 @@
         currentJobId = null;
         $('scan-cancel').hidden = true;
         $('scan-button').textContent = '비즈니스석 검색';
+      $('scan-live-button').textContent = '실시간으로 정확히 확인';
         setStatus('조회 프로그램이 다시 시작되어 이번 조회는 중단됐어요. 검색을 다시 눌러 주세요.', 'error');
         updateEstimate();
         return;
@@ -471,6 +484,7 @@
       currentJobId = null;
       $('scan-cancel').hidden = true;
       $('scan-button').textContent = '비즈니스석 검색';
+      $('scan-live-button').textContent = '실시간으로 정확히 확인';
       setStatus(`${error.message} 조회는 계속되고 있을 수 있어요. 검색을 다시 누르면 현재 상태를 확인해요.`, 'error');
       updateEstimate();
     }
@@ -486,6 +500,70 @@
       setStatus(error.message, 'error');
     } finally {
       $('scan-cancel').disabled = false;
+    }
+  }
+
+  function liveSelection() {
+    const picked = selection();
+    return {
+      origins: picked.origins, destinations: picked.destinations,
+      programs: picked.programs, adults: picked.adults,
+      startDate: $('scan-live-start').value, endDate: $('scan-live-end').value,
+      cabin: 'prestige',
+    };
+  }
+
+  function liveDayCount() {
+    const start = Date.parse(`${$('scan-live-start').value}T00:00:00+09:00`);
+    const end = Date.parse(`${$('scan-live-end').value}T00:00:00+09:00`);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return 0;
+    return Math.round((end - start) / 86400000) + 1;
+  }
+
+  function updateLiveEstimate() {
+    const note = $('scan-live-estimate');
+    const picked = liveSelection();
+    const days = liveDayCount();
+    const routes = picked.origins.length * picked.destinations.length * picked.programs.length;
+    const requests = routes * days;
+    $('scan-live-button').disabled = running || !days || !routes;
+    if (!days || !routes) {
+      note.textContent = !routes
+        ? '실시간으로 확인할 지역이나 공항을 먼저 고르고, 날짜 범위를 정해 주세요.'
+        : '실시간으로 확인할 날짜 범위를 고르면 걸리는 시간을 알려드려요.';
+      note.dataset.kind = '';
+      return;
+    }
+    // One request per date, spaced on purpose, so the cost is worth stating plainly.
+    const minutes = Math.max(1, Math.round((requests * 15) / 60));
+    note.textContent = `노선 ${routes}개 × ${days}일 = 요청 ${requests}회 · 약 ${minutes}분 걸려요. 날짜마다 항공사에 직접 물어보고, 지금 예약 가능한 날짜만 보여드려요.`;
+    note.dataset.kind = requests > 120 ? 'warn' : '';
+  }
+
+  async function startLiveScan() {
+    if (running) return;
+    try {
+      running = true;
+      startedAt = Date.now();
+      pollFailures = 0;
+      $('scan-live-button').disabled = true;
+      $('scan-button').disabled = true;
+      $('scan-live-button').textContent = '실시간으로 확인 중이에요…';
+      $('scan-failures').textContent = '';
+      setStatus('항공사 예매 화면에 날짜마다 직접 물어보고 있어요. 공개 달력은 보지 않아요.', 'busy');
+      const { jobId } = await api('/api/live-scan', { method: 'POST', body: JSON.stringify(liveSelection()) });
+      currentJobId = jobId;
+      $('scan-cancel').hidden = false;
+      polling = setInterval(() => void poll(jobId), 1500);
+      void poll(jobId);
+    } catch (error) {
+      running = false;
+      currentJobId = null;
+      $('scan-cancel').hidden = true;
+      $('scan-live-button').textContent = '실시간으로 정확히 확인';
+      setStatus(error.message, 'error');
+      updateEstimate();
+      updateLiveEstimate();
     }
   }
 
@@ -510,6 +588,7 @@
       currentJobId = null;
       $('scan-cancel').hidden = true;
       $('scan-button').textContent = '비즈니스석 검색';
+      $('scan-live-button').textContent = '실시간으로 정확히 확인';
       setStatus(error.message, 'error');
       updateEstimate();
     }
@@ -535,6 +614,10 @@
     $('tab-watch').addEventListener('click', () => showTab('watch'));
     $('tab-release').addEventListener('click', () => showTab('release'));
     $('scan-form').addEventListener('submit', startScan);
+    $('scan-live-button').addEventListener('click', () => void startLiveScan());
+    for (const id of ['scan-live-start', 'scan-live-end']) {
+      $(id).addEventListener('change', updateLiveEstimate);
+    }
     $('scan-cancel').addEventListener('click', cancelScan);
     $('scan-start-month').addEventListener('change', updateEstimate);
     $('scan-end-month').addEventListener('change', updateEstimate);

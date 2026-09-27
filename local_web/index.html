@@ -62,7 +62,13 @@
               <div class="field"><span class="field-label">마일리지 프로그램</span><div class="scan-checks" id="scan-programs"><label class="scan-check"><input type="checkbox" value="korean-air" checked><span>대한항공</span></label><label class="scan-check"><input type="checkbox" value="asiana-club" checked><span>아시아나</span></label></div></div>
             </div>
             <p id="scan-estimate" class="scan-estimate"></p>
-            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="primary" id="scan-button" type="submit" disabled>비즈니스석 검색</button><button class="provider-link" id="scan-cancel" type="button" style="margin-top:0;border:0;background:#77879b" hidden>조회 멈추기</button></div>
+            <div class="scan-block scan-row" style="padding-top:4px;border-top:1px solid #e4ecf3">
+              <label class="field"><span class="field-label">실시간 확인 시작일</span><input type="date" id="scan-live-start" class="scan-date"></label>
+              <label class="field"><span class="field-label">실시간 확인 종료일</span><input type="date" id="scan-live-end" class="scan-date"></label>
+            </div>
+            <p id="scan-live-estimate" class="scan-estimate"></p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="primary" id="scan-button" type="submit" disabled>비즈니스석 검색</button><button class="primary" id="scan-live-button" type="button">실시간으로 정확히 확인</button><button class="provider-link" id="scan-cancel" type="button" style="margin-top:0;border:0;background:#77879b" hidden>조회 멈추기</button></div>
+            <p class="program-hint" style="margin:8px 0 0">‘실시간으로 정확히 확인’은 공개 달력을 보지 않고 <strong>날짜마다 항공사 예매 화면에 직접 물어봅니다.</strong> 조회용 Chrome 로그인이 필요하고, 나오는 날짜는 지금 실제로 예약할 수 있는 날짜입니다.</p>
           </form>
           <div class="status" id="scan-status" role="status" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="scan-status-text">준비하고 있어요.</span></div>
           <p id="scan-failures" class="program-hint" style="margin:10px 0 0"></p>
