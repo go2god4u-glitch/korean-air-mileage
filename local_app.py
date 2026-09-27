@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import calendar
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -149,12 +150,16 @@ CABINS = ("economy", "premium", "prestige")
 # "all" is a display choice, not an additional field in the saved calendar.
 CABIN_CHOICES = ("all",) + CABINS
 RESTRICTIONS = {"ACCESS_RESTRICTED", "USER_ACTION_REQUIRED", "LOGIN_REQUIRED"}
-# A block or a security check is the airline refusing us, and the app never works
-# around one (README "접근 제한을 우회하거나 자동으로 재시도하지 않습니다"), so both latch
-# until the user intervenes. LOGIN_REQUIRED is not a refusal — the site is asking the
-# user to sign in — and latching it would block the very retry that fixes it.
+# A block or a security check is the airline refusing us, so both latch and the
+# sweep stops. LOGIN_REQUIRED is not a refusal — the site is asking the user to sign
+# in — and latching it would block the very retry that fixes it.
 LATCHED_RESTRICTIONS = {"ACCESS_RESTRICTED", "USER_ACTION_REQUIRED"}
 LOGIN_PROGRAMS = ("korean-air", "asiana-club")
+# A block from a home IP is over-requesting and lifts on its own after a few hours
+# (TROUBLESHOOTING_AWARD_SCAN.md 3.1), so the latch stops standing forever. Nothing
+# retries by itself when it lifts: the user presses 조회 again. Raise this if the
+# airline keeps refusing right after a latch expires.
+BLOCK_EXPIRY_SECONDS = 2 * 3600
 HANDOFF_TIMEOUT_SECONDS = 150
 HANDOFF_STATUS_LIMIT = 8192
 ROUTE_CATALOG_LIMIT = 2 * 1024 * 1024
@@ -765,6 +770,23 @@ def collect_leg(leg, root=ROOT):
         raise AppError("INVALID_RESULT", "조회 결과가 선택한 노선과 날짜에 맞는지 확인하지 못했어요. 이전에 저장한 결과는 그대로 남아 있어요.")
 
 
+def lifts_in(seconds):
+    """How the wait is phrased, so a blocked screen says when to try again.
+
+    Hours and minutes are both spelled out rather than rounded to one of them: an
+    hour and a half reported as "약 1시간" sends the user back while it still blocks."""
+    if seconds is None:
+        return " 제한이 풀리면 다시 조회할 수 있어요."
+    minutes = max(1, math.ceil(seconds / 60))
+    if minutes < 60:
+        wait = "약 %d분" % minutes
+    elif minutes % 60:
+        wait = "약 %d시간 %d분" % divmod(minutes, 60)
+    else:
+        wait = "약 %d시간" % (minutes // 60)
+    return " %s 뒤에 자동으로 풀려요. 그 뒤에 다시 조회해 주세요." % wait
+
+
 def offer_login(opener, program):
     """Open the airline's login page so a LOGIN_REQUIRED stop is actionable.
 
@@ -919,6 +941,7 @@ class SearchService:
         self.jobs = {}
         self.active = None
         self.restricted = self.store.block_path.exists()
+        self.restricted_at = None
 
     def start(self, params):
         with self.lock:
@@ -938,7 +961,8 @@ class SearchService:
             if self.active:
                 raise AppError("BUSY", "다른 조회나 자동 입력을 진행하고 있어요. 끝난 뒤 다시 눌러 주세요.", 409)
             if self.blocked():
-                raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 자동 입력을 할 수 없어요. 저장된 결과를 보거나 대한항공 홈페이지에서 확인해 주세요.", 409)
+                raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 자동 입력을 할 수 없어요."
+                               + lifts_in(self.blocked_for()) + " 저장된 결과는 그대로 볼 수 있어요.", 409)
             job_id = uuid.uuid4().hex
             if len(self.jobs) >= 40:
                 del self.jobs[next(iter(self.jobs))]
@@ -952,21 +976,62 @@ class SearchService:
             # Recoverable: the sweep still stops, but the next search may run.
             return
         with self.lock:
+            if self.restricted:
+                # Keep the first refusal's time. A blocked attempt raises this same
+                # code locally, so rewriting it here would push the expiry forward on
+                # every retry and the latch would never lift.
+                return
             self.restricted = True
+            self.restricted_at = utc_now()
             try:
-                self.store.write_json(self.store.block_path, {"code": code, "at": utc_now().isoformat()})
+                self.store.write_json(self.store.block_path,
+                                      {"code": code, "at": self.restricted_at.isoformat()})
             except OSError:
                 pass
 
-    def blocked(self):
-        """True while a latched refusal stands, from this process or an earlier one.
+    def latched_at(self):
+        """When the standing refusal was first recorded, or None if unknown.
 
-        A latch that could not be written to disk still holds for this process, so a
-        missing file never clears the in-memory flag."""
+        A latch that could not be written to disk still holds for this process, so the
+        in-memory time is used when the file is missing."""
+        if self.store.block_path.exists():
+            self.restricted = True
+            try:
+                stored = json.loads(self.store.block_path.read_text(encoding="utf-8"))["at"]
+                return datetime.fromisoformat(stored)
+            except (OSError, ValueError, KeyError, TypeError):
+                # An unreadable or undated latch has no age, so it stands until the
+                # user clears it rather than expiring at an age we guessed.
+                return self.restricted_at
+        return self.restricted_at
+
+    def blocked(self):
+        """True while a latched refusal still stands, from this process or an earlier
+        one. Lifts one that is old enough, so a block is not permanent."""
         with self.lock:
-            if self.store.block_path.exists():
-                self.restricted = True
-            return self.restricted
+            at = self.latched_at()
+            if not self.restricted:
+                return False
+            if at is None or (utc_now() - at).total_seconds() < BLOCK_EXPIRY_SECONDS:
+                return True
+            try:
+                self.store.block_path.unlink(missing_ok=True)
+            except OSError:
+                # Still on disk, so it would come back on restart: keep blocking.
+                return True
+            self.restricted = False
+            self.restricted_at = None
+            return False
+
+    def blocked_for(self):
+        """Seconds until the standing latch lifts, or None when nothing stands."""
+        with self.lock:
+            if not self.blocked():
+                return None
+            at = self.latched_at()
+            if at is None:
+                return None
+            return max(0, int(BLOCK_EXPIRY_SECONDS - (utc_now() - at).total_seconds()))
 
     def _run_handoff(self, job_id, selection):
         try:
@@ -1008,7 +1073,8 @@ class SearchService:
                 if value is not None and not self.store.stale(value):
                     continue
                 if self.blocked():
-                    raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 새로 조회할 수 없어요. 이전 결과를 보거나 대한항공 홈페이지에서 확인해 주세요.")
+                    raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 새로 조회할 수 없어요."
+                                   + lifts_in(self.blocked_for()) + " 이전 결과는 그대로 볼 수 있어요.")
                 self.update(job_id, status="running", progress=round(index / len(legs) * 100),
                             message="%s → %s · %s 마일리지 좌석을 확인하고 있어요." % (leg["origin"], leg["destination"], leg["month"]))
                 value = self.collector(leg)
@@ -1300,7 +1366,8 @@ class BusinessScanService:
                         continue
                     with self.search.lock:
                         if self.search.blocked():
-                            raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 새로 조회할 수 없어요.")
+                            raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 새로 조회할 수 없어요."
+                                           + lifts_in(self.search.blocked_for()))
                     self.update(job_id, status="running", progress=round(completed / total * 100) if total else 100,
                                 message="%s %s→%s · %s 확인하고 있어요." % (
                                     "대한항공" if program == "korean-air" else "아시아나",

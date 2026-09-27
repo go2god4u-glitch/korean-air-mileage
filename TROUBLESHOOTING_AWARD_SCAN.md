@@ -382,14 +382,30 @@ curl -s -X POST http://127.0.0.1:8765/api/awards/confirm-login \
 
 `LOGIN_REQUIRED`는 `data/local/access-restricted.json` 래치를 **남기지 않는다.** 로그인한 뒤
 다시 조회를 누르면 그대로 진행된다. 래치를 남기는 것은 `ACCESS_RESTRICTED`와
-`USER_ACTION_REQUIRED`뿐이고, 이 둘은 자동으로 풀리지 않는다(README: 접근 제한을 우회하거나
-자동으로 재시도하지 않는다). 사람이 판단해 파일을 지운다:
+`USER_ACTION_REQUIRED`뿐이다.
+
+### 8.2 래치는 2시간 뒤 스스로 풀린다
+
+`BLOCK_EXPIRY_SECONDS`(local_app.py, 기본 2시간)가 지나면 다음 조회 때 래치 파일이 지워지고
+정상 진행된다. 화면에는 남은 시간이 "약 N시간/N분 뒤에 자동으로 풀려요"로 나온다. 풀린다는 것은
+**다시 조회할 수 있게 된다는 뜻일 뿐, 앱이 알아서 재조회하지는 않는다** — 막혀 있는 동안 항공사에
+요청을 보내지 않는 원칙은 그대로다.
+
+기다리지 않고 지금 풀려면:
 
 ```bash
-rm data/local/access-restricted.json   # 지운 뒤 앱을 다시 시작한다
+rm data/local/access-restricted.json   # 앱이 실행 중이면 재시작까지 해야 한다
 ```
 
 앱이 실행 중이면 파일만 지워도 메모리 플래그가 남아 있어 계속 막힌다.
+
+주의할 점 둘:
+
+- **막힌 상태로 다시 조회해도 만료 시각은 밀리지 않는다.** 막힌 시도 역시 `ACCESS_RESTRICTED`를
+  올리기 때문에, 그때 기록 시각을 덮어쓰면 재시도마다 2시간이 갱신되어 영원히 안 풀린다.
+  `restrict()`는 이미 래치가 있으면 첫 기록 시각을 그대로 둔다.
+- **`at`이 없거나 깨진 래치 파일은 만료되지 않는다.** 나이를 모르는 래치를 임의의 나이로
+  간주해 풀지 않고, 사람이 지울 때까지 유지한다.
 
 코드 `AMBIGUOUS_CABIN`이면 발견 1건에 등급이 둘 담긴 것이다. 버그이며
 [ARCHITECTURE §9.3](AWARD_SCAN_ARCHITECTURE.md#93-등급은-반드시-하나씩)을 본다.

@@ -446,6 +446,58 @@ class TemporaryStoreTests(unittest.TestCase):
         self.assertEqual(self.store.read(self.leg), old)
         self.assertEqual(job["result"]["legs"][0]["calendar"], old)
 
+    def latch(self, age_seconds, code="ACCESS_RESTRICTED"):
+        at = app.utc_now() - timedelta(seconds=age_seconds)
+        self.store.write_json(self.store.block_path, {"code": code, "at": at.isoformat()})
+        return at
+
+    def test_a_latch_older_than_the_expiry_lifts_itself(self):
+        self.latch(app.BLOCK_EXPIRY_SECONDS + 60)
+        collector = mock.Mock(return_value=synthetic_calendar(self.leg))
+        service = app.SearchService(self.store, collector)
+        job = await_job(service, service.start(PARAMS))
+        self.assertEqual(job["status"], "complete")
+        collector.assert_called_once_with(self.leg)
+        self.assertFalse(self.store.block_path.exists())
+
+    def test_a_fresh_latch_still_blocks(self):
+        self.latch(60)
+        collector = mock.Mock(return_value=synthetic_calendar(self.leg))
+        service = app.SearchService(self.store, collector)
+        job = await_job(service, service.start(PARAMS))
+        self.assertEqual(job["error"]["code"], "ACCESS_RESTRICTED")
+        collector.assert_not_called()
+        self.assertTrue(self.store.block_path.exists())
+
+    def test_blocked_attempts_do_not_push_the_expiry_forward(self):
+        # A blocked attempt raises ACCESS_RESTRICTED itself, so restrict() runs again.
+        # If that rewrote the recorded time the latch would be renewed on every retry
+        # and would never expire, which is the whole failure this guards.
+        at = self.latch(app.BLOCK_EXPIRY_SECONDS - 120)
+        collector = mock.Mock(return_value=synthetic_calendar(self.leg))
+        service = app.SearchService(self.store, collector)
+        for _ in range(3):
+            self.assertEqual(await_job(service, service.start(PARAMS))["error"]["code"],
+                             "ACCESS_RESTRICTED")
+        self.assertEqual(json.loads(self.store.block_path.read_text())["at"], at.isoformat())
+        collector.assert_not_called()
+
+    def test_an_undated_latch_stands_instead_of_expiring_at_a_guessed_age(self):
+        self.store.write_json(self.store.block_path, {"code": "ACCESS_RESTRICTED"})
+        collector = mock.Mock(return_value=synthetic_calendar(self.leg))
+        service = app.SearchService(self.store, collector)
+        self.assertEqual(await_job(service, service.start(PARAMS))["error"]["code"],
+                         "ACCESS_RESTRICTED")
+        collector.assert_not_called()
+        self.assertTrue(self.store.block_path.exists())
+
+    def test_blocked_message_says_when_the_latch_lifts(self):
+        self.latch(app.BLOCK_EXPIRY_SECONDS - 1800)
+        service = app.SearchService(self.store, mock.Mock())
+        job = await_job(service, service.start(PARAMS))
+        self.assertIn("자동으로 풀려요", job["message"])
+        self.assertIn("30분", job["message"])
+
     def test_offer_login_opens_the_search_chrome_and_never_hides_the_airline_reason(self):
         opener = mock.Mock()
         note = app.offer_login(opener, "korean-air")
