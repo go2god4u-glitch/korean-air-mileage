@@ -258,7 +258,10 @@
     const target = $('release-date').value;
     if (!/^[A-Z]{3}$/.test(destination) || !target) { note.textContent = ''; return; }
     try {
-      const data = await api(`/api/route-schedule?origin=${origin}&destination=${destination}&date=${target}`);
+      // The two airlines fly the same route on different days, so the answer has to
+      // be asked for the airline actually being registered.
+      const program = $('release-program').value;
+      const data = await api(`/api/route-schedule?origin=${origin}&destination=${destination}&date=${target}&program=${program}`);
       note.textContent = data.note || '';
       note.dataset.kind = data.operating === 'NOT_OPERATED' ? 'warn' : 'info';
     } catch { note.textContent = ''; }
@@ -430,7 +433,7 @@
     $('release-form').addEventListener('submit', startRelease);
     $('release-login').addEventListener('click', () => void openReleaseLogin());
     $('release-date').addEventListener('change', describeRelease);
-    for (const id of ['release-origin', 'release-destination']) {
+    for (const id of ['release-origin', 'release-destination', 'release-program']) {
       $(id).addEventListener('change', describeRelease);
     }
     $('release-program').addEventListener('change', () => { syncReleaseCabins(); describeRelease(); });

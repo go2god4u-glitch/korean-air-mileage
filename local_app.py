@@ -1761,13 +1761,22 @@ class RouteSchedule:
     def __init__(self, store=None):
         self.store = store or CalendarStore()
 
+    # Every record here is Korean Air's own public calendar. Asiana's schedule is a
+    # different airline's, and answering for it from these files would be a wrong
+    # answer wearing the right shape.
+    SOURCE = "KOREAN_AIR_PUBLIC_AWARD_CALENDAR"
+    PROGRAM = "korean-air"
+
     def month_record(self, origin, destination, month):
         leg = {"origin": origin, "destination": destination, "month": month,
                "tripType": "ONE_WAY", "direction": "outbound"}
         try:
-            return self.store.read(leg)
+            record = self.store.read(leg)
         except Exception:
             return None
+        if record and record.get("source") not in (None, self.SOURCE):
+            return None
+        return record
 
     def on(self, origin, destination, day):
         """OPERATED / NOT_OPERATED / None when nothing was ever collected."""
@@ -1811,8 +1820,13 @@ class RouteSchedule:
                 flying.append(destination)
         return flying
 
-    def note_for(self, origin, destination, day):
+    def note_for(self, origin, destination, day, program=PROGRAM):
         """One sentence for the screen, or "" when there is nothing worth saying."""
+        if program != self.PROGRAM:
+            # Saying nothing would be read as "it flies", so it says which airline
+            # it cannot speak for rather than borrowing the other one's schedule.
+            airline = "아시아나" if program == "asiana-club" else program
+            return "%s 운항 요일 기록이 아직 없어서 이 날 뜨는지 확인하지 못했어요. 운항하지 않는다는 뜻은 아니에요." % airline
         status, updated = self.on(origin, destination, day)
         stamp = " (%s 기록 기준)" % updated[:10] if isinstance(updated, str) and len(updated) >= 10 else ""
         if status is None:
@@ -1958,7 +1972,8 @@ class ReleaseWatchService:
                                "'%s' 계정은 이미 %s %s→%s 를 기다리고 있어요. 다른 계정을 쓰거나 먼저 멈춰 주세요."
                                % (params["account"], clash["date"], clash["origin"], clash["destination"]), 409)
             try:
-                schedule_note = self.schedule.note_for(params["origin"], params["destination"], params["date"])
+                schedule_note = self.schedule.note_for(params["origin"], params["destination"],
+                                                       params["date"], params["program"])
             except Exception:
                 # Knowing nothing about the schedule is never a reason to refuse a standby.
                 schedule_note = ""
@@ -2288,6 +2303,7 @@ class Handler(BaseHTTPRequestHandler):
                 origin = (query.get("origin", ["ICN"])[0] or "ICN").upper()
                 destination = (query.get("destination", [""])[0] or "").upper()
                 day = query.get("date", [""])[0]
+                program = query.get("program", ["korean-air"])[0]
                 if not re.fullmatch(r"[A-Z]{3}", origin) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day or ""):
                     raise AppError("INVALID_INPUT", "공항 코드와 날짜를 확인해 주세요.")
                 schedule = self.server.release_watch_service.schedule
@@ -2295,7 +2311,8 @@ class Handler(BaseHTTPRequestHandler):
                     status, updated = schedule.on(origin, destination, day)
                     self.respond({"origin": origin, "destination": destination, "date": day,
                                   "operating": status, "sourceUpdatedAt": updated,
-                                  "note": schedule.note_for(origin, destination, day),
+                                  "program": program,
+                                  "note": schedule.note_for(origin, destination, day, program),
                                   "nearby": schedule.nearby_flying(origin, destination, day)[:5]})
                 else:
                     self.respond({"origin": origin, "date": day,

@@ -1804,6 +1804,25 @@ class RouteScheduleTests(unittest.TestCase):
         note = self.schedule.note_for("ICN", "IST", "2026-11-03")
         self.assertIn("BCN", note)
 
+    def test_it_never_answers_for_asiana_from_korean_airs_calendar(self):
+        # Every record here is Korean Air's own public calendar. The two airlines fly
+        # the same route on different days, so borrowing one schedule for the other
+        # is a wrong answer wearing the right shape.
+        self.record("ICN", "IST", "2026-11", not_operated=["2026-11-03"])
+        korean = self.schedule.note_for("ICN", "IST", "2026-11-03", "korean-air")
+        asiana = self.schedule.note_for("ICN", "IST", "2026-11-03", "asiana-club")
+        self.assertIn("운항하지 않아요", korean)
+        self.assertNotIn("운항하지 않아요", asiana)
+        self.assertIn("아시아나", asiana)
+        # Silence would be read as "it flies", so it says what it cannot speak for.
+        self.assertIn("운항하지 않는다는 뜻은 아니", asiana)
+
+    def test_a_record_from_another_source_is_not_read_as_a_schedule(self):
+        value = self.record("ICN", "IST", "2026-11", not_operated=["2026-11-03"])
+        foreign = dict(value, source="SOMETHING_ELSE")
+        with mock.patch.object(self.store, "read", return_value=foreign):
+            self.assertIsNone(self.schedule.on("ICN", "IST", "2026-11-03")[0])
+
     def test_the_days_a_route_flies_can_be_listed_for_a_month(self):
         self.record("ICN", "IST", "2026-11", not_operated=["2026-11-03"])
         days = self.schedule.flying_days("ICN", "IST", "2026-11")
@@ -1843,6 +1862,18 @@ class StandbyScheduleNoticeTests(unittest.TestCase):
         job = self.watch.start(self.request())
         self.assertEqual(job["status"], "waiting")
         self.assertIn("운항하지 않아요", job["scheduleNote"])
+
+    def test_an_asiana_standby_is_not_warned_from_korean_airs_schedule(self):
+        leg = {"origin": "ICN", "destination": "IST", "month": "2027-09",
+               "tripType": "ONE_WAY", "direction": "outbound"}
+        value = synthetic_calendar(leg)
+        for row in value["dates"]:
+            row["operatingStatus"] = "NOT_OPERATED"
+        self.watch.schedule.store.save(value, leg)
+        job = self.watch.start(self.request(program="asiana-club", adults=2, date="2027-09-27"))
+        self.assertEqual(job["status"], "waiting")
+        self.assertNotIn("운항하지 않아요", job["scheduleNote"])
+        self.assertIn("아시아나", job["scheduleNote"])
 
     def test_a_standby_on_a_flying_day_carries_no_warning(self):
         leg = {"origin": "ICN", "destination": "IST", "month": "2027-09",
