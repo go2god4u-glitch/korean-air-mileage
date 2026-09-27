@@ -149,6 +149,9 @@ CACHE_SECONDS = 12 * 3600
 CABINS = ("economy", "premium", "prestige")
 # "all" is a display choice, not an additional field in the saved calendar.
 CABIN_CHOICES = ("all",) + CABINS
+# What the airline calls each cabin, for messages the user reads.
+CABIN_LABELS = {"economy": "일반석", "premium": "프레스티지 이코노미", "prestige": "비즈니스석",
+                "first": "일등석"}
 RESTRICTIONS = {"ACCESS_RESTRICTED", "USER_ACTION_REQUIRED", "LOGIN_REQUIRED"}
 # A block or a security check is the airline refusing us, so both latch and the
 # sweep stops. LOGIN_REQUIRED is not a refusal — the site is asking the user to sign
@@ -343,6 +346,81 @@ def business_scan_months(start_month, end_month, today=None):
         if month > 12:
             month, year = 1, year + 1
     return months
+
+
+# A live sweep asks the airline once per date, so the range is capped: at the
+# courtesy interval a hundred dates is already most of an hour.
+LIVE_SCAN_MAX_QUERIES = 120
+# What the airline's booking search accepts, and the word it uses for each.
+LIVE_SCAN_CABINS = {"prestige": "business", "first": "first"}
+
+
+def validate_live_scan_request(raw, today=None):
+    """One request sweeps a date range, asking the airline's own booking search.
+
+    Discovery here never reads the public calendar. The user's own experience is why:
+    the calendar is a once-daily snapshot that offered seats that were not there when
+    signed in, and a date that cannot be booked is worse than a date not shown."""
+    if not isinstance(raw, dict):
+        raise AppError("INVALID_INPUT", "검색 조건을 확인해 주세요.")
+    today = today or datetime.now(SEOUL).date()
+
+    def codes(field, label, default=None):
+        values = raw.get(field) or default or []
+        if not isinstance(values, list) or not values:
+            raise AppError("INVALID_INPUT", "%s 공항을 하나 이상 선택해 주세요." % label)
+        result, seen = [], set()
+        for value in values:
+            code = str(value).strip().upper()
+            if not re.fullmatch(r"[A-Z]{3}", code) or code in seen:
+                raise AppError("INVALID_AIRPORT", "%s 공항 코드를 확인해 주세요." % label)
+            seen.add(code)
+            result.append(code)
+        return result
+
+    origins = codes("origins", "출발", ["ICN"])
+    destinations = codes("destinations", "도착")
+    if set(origins) & set(destinations):
+        raise AppError("INVALID_INPUT", "출발과 도착이 같은 공항은 조회할 수 없어요.")
+
+    def day(field, label):
+        try:
+            value = date.fromisoformat(str(raw.get(field)))
+        except (TypeError, ValueError):
+            raise AppError("INVALID_INPUT", "%s 날짜를 YYYY-MM-DD 형식으로 알려 주세요." % label)
+        if value <= today:
+            raise AppError("INVALID_INPUT", "%s 날짜는 내일 이후여야 해요." % label)
+        # The airline opens one more day each morning, so a later date cannot be
+        # searched yet. Saying so beats reporting every one of them as no seats.
+        if value > today + timedelta(days=360):
+            raise AppError("MONTH_OUT_OF_RANGE", "%s 날짜가 아직 예약이 열리지 않은 기간이에요. 오늘부터 360일 안으로 골라 주세요." % label)
+        return value
+
+    start, end = day("startDate", "시작"), day("endDate", "종료")
+    if end < start:
+        raise AppError("INVALID_INPUT", "종료 날짜가 시작 날짜보다 앞설 수 없어요.")
+
+    # The airline's own booking search answers for these two only, so the range
+    # sweep offers exactly what it can actually ask about.
+    cabin = raw.get("cabin") or "prestige"
+    if cabin not in LIVE_SCAN_CABINS:
+        raise AppError("INVALID_INPUT", "실시간 조회는 비즈니스석과 일등석만 확인할 수 있어요.")
+    programs = raw.get("programs") or ["korean-air"]
+    if not isinstance(programs, list) or not programs or any(p not in LOGIN_PROGRAMS for p in programs):
+        raise AppError("INVALID_INPUT", "항공사를 확인해 주세요.")
+    adults = raw.get("adults") or 1
+    if not isinstance(adults, int) or not 1 <= adults <= 9:
+        raise AppError("INVALID_INPUT", "인원은 1명에서 9명 사이로 골라 주세요.")
+
+    dates = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+    total = len(origins) * len(destinations) * len(dates) * len(programs)
+    if total > LIVE_SCAN_MAX_QUERIES:
+        raise AppError("INVALID_INPUT",
+                       "한 번에 확인할 수 있는 건수(%d건)를 넘었어요. 날짜 범위나 노선을 줄여 주세요. 지금 조건은 %d건이에요."
+                       % (LIVE_SCAN_MAX_QUERIES, total))
+    return {"origins": origins, "destinations": destinations,
+            "dates": [d.isoformat() for d in dates], "cabin": cabin,
+            "programs": list(dict.fromkeys(programs)), "adults": adults}
 
 
 def validate_business_scan_request(raw, today=None):
@@ -1212,6 +1290,124 @@ class BusinessScanService:
             threading.Thread(target=self._run, args=(job_id, legs, params["programs"]), daemon=True).start()
             return job_id
 
+    def start_live(self, raw):
+        """Sweep a date range against the airline's own booking search.
+
+        Shares SearchService's lock so it can never run beside a single-route search
+        or an 09:00 standby firing, which is the moment that matters most."""
+        params = validate_live_scan_request(raw)
+        self.party_size = params["adults"]
+        queries = [{"program": program, "origin": origin, "destination": destination, "date": day}
+                   for program in params["programs"]
+                   for origin in params["origins"] for destination in params["destinations"]
+                   for day in params["dates"]]
+        with self.search.lock:
+            if self.search.active:
+                raise AppError("BUSY", "다른 조회나 자동 입력을 진행하고 있어요. 끝난 뒤 다시 눌러 주세요.", 409)
+            job_id = uuid.uuid4().hex
+            if len(self.jobs) >= 20:
+                del self.jobs[next(iter(self.jobs))]
+            self.jobs[job_id] = {"status": "queued", "progress": 0, "kind": "live-scan",
+                                  "message": "실시간 조회를 준비하고 있어요.",
+                                  "total": len(queries), "completed": 0, "hits": [], "failures": []}
+            self.search.active = job_id
+            threading.Thread(target=self._run_live, args=(job_id, queries, params["cabin"]),
+                             daemon=True).start()
+            return job_id
+
+    def _run_live(self, job_id, queries, cabin):
+        """Asks the airline about one date at a time and keeps only what it confirms.
+
+        The public calendar is never consulted: it is a once-daily snapshot that has
+        offered seats that were gone when signed in. A refusal or an error is recorded
+        as its own outcome — never as "no seats", which is the one lie that would send
+        the user past a bookable date."""
+        hits, failures, completed = [], [], 0
+        skipped, refused = [], set()
+        unsupported = self.unsupported_routes()
+        try:
+            for query in queries:
+                if job_id in self.cancelled:
+                    raise StopIteration()
+                program, airline = query["program"], ("대한항공" if query["program"] == "korean-air" else "아시아나")
+                route_key = "%s|%s|%s" % (program, query["origin"], query["destination"])
+                if program in refused or route_key in unsupported:
+                    completed += 1
+                    if route_key in unsupported and route_key not in skipped:
+                        skipped.append(route_key)
+                    self.update(job_id, completed=completed, skipped=list(skipped))
+                    continue
+                self.update(job_id, status="running",
+                            progress=round(completed / len(queries) * 100) if queries else 100,
+                            message="%s %s→%s · %s 실시간 확인 중이에요." % (
+                                airline, query["origin"], query["destination"], query["date"]))
+                # The airline names business class differently from our own calendar,
+                # and sending our word for it is answered with INVALID_QUERY.
+                ask = {"origin": query["origin"], "destination": query["destination"],
+                       "date": query["date"], "cabin": LIVE_SCAN_CABINS[cabin]}
+                if program == "asiana-club" and self.party_size > 1:
+                    ask["adults"] = self.party_size
+                try:
+                    # The same courtesy the calendar collector observes: one airline,
+                    # one request at a time, spaced.
+                    pace_korean_air()
+                    result = self.award.worker.call("verify", ask, program=program, timeout=180)
+                except SasError as error:
+                    result = {"status": "failed", "code": error.code}
+                status, code = result.get("status"), result.get("code") or "SEARCH_FAILED"
+                if status == "available":
+                    hits.append({"program": program, "origin": query["origin"],
+                                 "destination": query["destination"], "month": query["date"][:7],
+                                 "date": query["date"], "cabins": [cabin],
+                                 "foundAt": utc_now().isoformat(), "live": "available",
+                                 "liveFlights": result.get("flights") or [],
+                                 "liveCheckedAt": utc_now().isoformat()})
+                elif status != "empty":
+                    # Not a seat count: a question the airline did not answer.
+                    failures.append({"program": program, "origin": query["origin"],
+                                     "destination": query["destination"],
+                                     "month": query["date"][:7], "date": query["date"], "code": code})
+                    if code in UNSUPPORTED_ROUTE_CODES:
+                        self.remember_unsupported(program, query["origin"], query["destination"])
+                        unsupported.add(route_key)
+                        if route_key not in skipped:
+                            skipped.append(route_key)
+                    elif code == "LOGIN_REQUIRED":
+                        # One airline wanting a login says nothing about the other.
+                        refused.add(program)
+                        self.update(job_id, message="%s 로그인이 필요해요. 조회용 Chrome에 로그인 창을 열고 있어요." % airline)
+                        offer_login(self.award.open, program)
+                    elif code in RESTRICTIONS:
+                        refused.add(program)
+                completed += 1
+                self.update(job_id, completed=completed, hits=list(hits),
+                            failures=list(failures), skipped=list(skipped))
+            available = len(hits)
+            note = ""
+            if refused:
+                note = " %s은(는) 중간에 더 확인하지 못했어요." % "·".join(
+                    "대한항공" if p == "korean-air" else "아시아나" for p in sorted(refused))
+            self.update(job_id, status="complete", progress=100, hits=hits, failures=failures,
+                        skipped=skipped,
+                        message="실시간 조회를 마쳤어요. 지금 예약 가능한 %s %d건을 찾았어요.%s%s" % (
+                            CABIN_LABELS.get(cabin, cabin), available, note,
+                            " 미취항 노선 %d개는 건너뛰었어요." % len(skipped) if skipped else ""))
+        except StopIteration:
+            self.update(job_id, status="cancelled", hits=hits, failures=failures, skipped=skipped,
+                        message="조회를 멈췄어요. 지금까지 확인한 결과는 그대로 남아 있어요.")
+        except AppError as error:
+            self.update(job_id, status="failed", message=error.message,
+                        error={"code": error.code, "message": error.message},
+                        hits=hits, failures=failures)
+        except Exception:
+            self.update(job_id, status="failed", message="실시간 조회 중 문제가 생겼어요. 지금까지 확인한 결과는 남아 있어요.",
+                        error={"code": "LOCAL_ERROR", "message": "실시간 조회 중 문제가 생겼어요."},
+                        hits=hits, failures=failures)
+        finally:
+            with self.search.lock:
+                self.search.active = None
+                self.cancelled.discard(job_id)
+
     def get(self, job_id):
         with self.search.lock:
             if job_id in self.jobs:
@@ -1313,6 +1509,7 @@ class BusinessScanService:
                 continue
             self.update(job_id, message="실시간 확인 중이에요 · %s→%s %s" % (
                 hit["origin"], hit["destination"], hit["date"]))
+            pace_korean_air()
             # A finding names one cabin. Silently picking one of several is how a
             # first-class answer once got shown as an available business seat, so
             # an ambiguous finding is left unchecked instead of guessed at.
@@ -1973,7 +2170,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path not in ("/api/search", "/api/business-scan", "/api/business-scan/cancel",
                                  "/api/watches/save", "/api/watches/delete", "/api/watches/sync",
                                  "/api/open-booking", "/api/open-airline",
-                                 "/api/release-watch/start", "/api/release-watch/cancel", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel"):
+                                 "/api/release-watch/start", "/api/release-watch/cancel", "/api/open-account", "/api/sas/open", "/api/sas/search", "/api/sas/cancel", "/api/awards/open", "/api/awards/confirm-login", "/api/awards/search", "/api/awards/cancel", "/api/live-scan"):
                 raise AppError("NOT_FOUND", "요청한 기능을 찾을 수 없어요.", 404)
             if self.headers.get("Content-Type", "").split(";", 1)[0].strip() != "application/json":
                 raise AppError("INVALID_INPUT", "검색 조건을 확인해 주세요.", 415)
@@ -2006,6 +2203,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/open-account":
                 self.respond(open_account_page(payload))
+                return
+            if self.path == "/api/live-scan":
+                job_id = self.server.business_scan_service.start_live(payload)
+                self.respond({"jobId": job_id}, 202)
                 return
             if self.path == "/api/business-scan":
                 self.respond({"jobId": self.server.business_scan_service.start(payload)}, 202)

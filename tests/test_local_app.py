@@ -1424,5 +1424,119 @@ class LiveVerificationCabinTests(unittest.TestCase):
             self.assertEqual(self.scan._collect_korean_air(self.leg), [])
 
 
+class LiveScanTests(unittest.TestCase):
+    """The public calendar is a once-daily snapshot and has offered seats that were
+    gone when signed in, so discovery here asks the airline's own booking search about
+    one date at a time and keeps only what it confirms."""
+
+    TODAY = date(2026, 9, 27)
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.service = app.SearchService(app.CalendarStore(self.root))
+        self.award = mock.Mock()
+        self.scan = app.BusinessScanService(self.service, self.award, self.root)
+        pace = mock.patch.object(app, "pace_korean_air")
+        pace.start()
+        self.addCleanup(pace.stop)
+
+    def ask(self, **overrides):
+        raw = {"destinations": ["LAX"], "startDate": "2027-03-10", "endDate": "2027-03-12",
+               "cabin": "prestige"}
+        raw.update(overrides)
+        return app.validate_live_scan_request(raw, self.TODAY)
+
+    def run_live(self, answers, **overrides):
+        self.award.worker.call.side_effect = answers
+        job_id = self.scan.start_live({"destinations": ["LAX"], "startDate": "2027-03-10",
+                                       "endDate": "2027-03-12", "cabin": "prestige", **overrides})
+        for _ in range(200):
+            job = self.scan.get(job_id)
+            if job["status"] in ("complete", "failed", "cancelled"):
+                return job
+            time.sleep(0.02)
+        raise AssertionError("Live scan did not finish: %r" % self.scan.get(job_id))
+
+    def test_a_date_range_becomes_one_question_per_date(self):
+        params = self.ask()
+        self.assertEqual(params["dates"], ["2027-03-10", "2027-03-11", "2027-03-12"])
+        self.assertEqual(params["origins"], ["ICN"])
+        self.assertEqual(params["programs"], ["korean-air"])
+
+    def test_dates_outside_what_the_airline_has_opened_are_refused_up_front(self):
+        # Reporting every unopened date as "no seats" is the one answer that would
+        # send the user past a date that is simply not on sale yet.
+        for field, value in (("startDate", "2026-09-27"), ("endDate", "2028-01-01")):
+            with self.subTest(field=field):
+                with self.assertRaises(app.AppError):
+                    self.ask(**{field: value})
+
+    def test_a_backwards_or_oversized_range_is_refused_before_any_request(self):
+        with self.assertRaises(app.AppError):
+            self.ask(startDate="2027-03-12", endDate="2027-03-10")
+        with self.assertRaises(app.AppError) as raised:
+            self.ask(endDate="2027-07-10")
+        self.assertIn("줄여", raised.exception.message)
+
+    def test_only_the_cabins_the_booking_search_answers_for_are_offered(self):
+        self.assertEqual(self.ask(cabin="first")["cabin"], "first")
+        with self.assertRaises(app.AppError):
+            self.ask(cabin="economy")
+
+    def test_a_confirmed_date_is_kept_with_the_flights_the_airline_named(self):
+        job = self.run_live([
+            {"status": "available", "flights": ["KE017 62,500 마일"]},
+            {"status": "empty"},
+            {"status": "empty"},
+        ])
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual([h["date"] for h in job["hits"]], ["2027-03-10"])
+        hit = job["hits"][0]
+        self.assertEqual(hit["live"], "available")
+        self.assertEqual(hit["liveFlights"], ["KE017 62,500 마일"])
+        self.assertEqual(hit["cabins"], ["prestige"])
+        self.assertEqual(job["failures"], [])
+
+    def test_the_airline_is_asked_in_its_own_word_for_business_class(self):
+        self.run_live([{"status": "empty"}] * 3)
+        for call in self.award.worker.call.call_args_list:
+            self.assertEqual(call.args[1]["cabin"], "business")
+        self.assertEqual(self.award.worker.call.call_args_list[0].args[0], "verify")
+
+    def test_an_unanswered_date_is_a_failure_and_never_a_confirmed_seat(self):
+        job = self.run_live([
+            {"status": "failed", "code": "SEARCH_TIMEOUT"},
+            {"status": "empty"},
+            {"status": "available", "flights": []},
+        ])
+        self.assertEqual([h["date"] for h in job["hits"]], ["2027-03-12"])
+        self.assertEqual([(f["date"], f["code"]) for f in job["failures"]],
+                         [("2027-03-10", "SEARCH_TIMEOUT")])
+
+    def test_a_login_request_stops_that_airline_and_opens_its_login_window(self):
+        job = self.run_live([{"status": "failed", "code": "LOGIN_REQUIRED"}])
+        self.assertEqual(job["status"], "complete")
+        self.assertEqual(job["hits"], [])
+        self.assertEqual(job["completed"], 3)
+        # The remaining dates are not reported as sold out, and the window is opened.
+        self.assertEqual([f["code"] for f in job["failures"]], ["LOGIN_REQUIRED"])
+        self.award.open.assert_called_once_with("korean-air")
+
+    def test_the_public_calendar_is_never_read(self):
+        with mock.patch.object(self.service.store, "read",
+                               side_effect=AssertionError("live scan must not read the calendar")):
+            job = self.run_live([{"status": "empty"}] * 3)
+        self.assertEqual(job["status"], "complete")
+
+    def test_a_live_scan_cannot_run_beside_another_search(self):
+        self.service.active = "already-running"
+        with self.assertRaises(app.AppError) as raised:
+            self.scan.start_live({"destinations": ["LAX"], "startDate": "2027-03-10",
+                                  "endDate": "2027-03-10"})
+        self.assertEqual(raised.exception.code, "BUSY")
+
+
 if __name__ == "__main__":
     unittest.main()
