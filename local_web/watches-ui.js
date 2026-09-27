@@ -248,7 +248,24 @@
 
   /** Says plainly when the airline opens the chosen date, so nobody waits on a
    *  morning that has already passed or is a year away. */
+  /** Warn, never block: a record is a snapshot, and a schedule can have changed
+   *  since it was collected. Silence here means "no record", not "it flies". */
+  async function describeSchedule() {
+    const note = $('release-schedule');
+    if (!note) return;
+    const origin = ($('release-origin').value || 'ICN').trim().toUpperCase();
+    const destination = ($('release-destination').value || '').trim().toUpperCase();
+    const target = $('release-date').value;
+    if (!/^[A-Z]{3}$/.test(destination) || !target) { note.textContent = ''; return; }
+    try {
+      const data = await api(`/api/route-schedule?origin=${origin}&destination=${destination}&date=${target}`);
+      note.textContent = data.note || '';
+      note.dataset.kind = data.operating === 'NOT_OPERATED' ? 'warn' : 'info';
+    } catch { note.textContent = ''; }
+  }
+
   function describeRelease() {
+    void describeSchedule();
     const target = $('release-date').value;
     const note = $('release-when');
     const opens = target && releaseDateFor(target);
@@ -413,6 +430,9 @@
     $('release-form').addEventListener('submit', startRelease);
     $('release-login').addEventListener('click', () => void openReleaseLogin());
     $('release-date').addEventListener('change', describeRelease);
+    for (const id of ['release-origin', 'release-destination']) {
+      $(id).addEventListener('change', describeRelease);
+    }
     $('release-program').addEventListener('change', () => { syncReleaseCabins(); describeRelease(); });
     // A standby runs for hours, so its state is polled rather than shown once.
     releaseTimer = setInterval(() => void loadRelease(), 15000);

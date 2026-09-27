@@ -1739,6 +1739,91 @@ def validate_release_request(raw, today=None):
     return params
 
 
+class RouteSchedule:
+    """What the collected calendars say about which days a route actually flies.
+
+    Korean Air's public calendar marks every date OPERATED or NOT_OPERATED, so a
+    date with no seat and a date with no flight are different answers and are kept
+    that way. A route/month never collected is a third answer — unknown — and must
+    never read as "it flies": the records live under data/, which git ignores, so a
+    fresh copy of this project knows nothing until it collects some.
+
+    Every answer carries the day the airline last updated the record it came from,
+    because a schedule seen a year ago can have changed since."""
+
+    def __init__(self, store=None):
+        self.store = store or CalendarStore()
+
+    def month_record(self, origin, destination, month):
+        leg = {"origin": origin, "destination": destination, "month": month,
+               "tripType": "ONE_WAY", "direction": "outbound"}
+        try:
+            return self.store.read(leg)
+        except Exception:
+            return None
+
+    def on(self, origin, destination, day):
+        """OPERATED / NOT_OPERATED / None when nothing was ever collected."""
+        record = self.month_record(origin, destination, day[:7])
+        if not record:
+            return None, None
+        for row in record.get("dates") or []:
+            if row.get("date") == day:
+                status = row.get("operatingStatus")
+                if status in ("OPERATED", "NOT_OPERATED"):
+                    return status, record.get("sourceUpdatedAt")
+                return None, record.get("sourceUpdatedAt")
+        return None, record.get("sourceUpdatedAt")
+
+    def flying_days(self, origin, destination, month):
+        record = self.month_record(origin, destination, month)
+        if not record:
+            return None
+        return [row["date"] for row in record.get("dates") or []
+                if row.get("operatingStatus") == "OPERATED"]
+
+    def nearby_flying(self, origin, destination, day, span=7):
+        """The closest dates this route does fly, for when the chosen one does not."""
+        target = date.fromisoformat(day)
+        months = {(target + timedelta(days=offset)).isoformat()[:7]
+                  for offset in (-span, 0, span)}
+        found = []
+        for month in sorted(months):
+            for value in self.flying_days(origin, destination, month) or []:
+                if abs((date.fromisoformat(value) - target).days) <= span:
+                    found.append(value)
+        return sorted(set(found), key=lambda v: (abs((date.fromisoformat(v) - target).days), v))
+
+    def routes_flying_on(self, day, origin="ICN"):
+        """Which destinations do fly that day — the other half of the answer."""
+        flying = []
+        for path in sorted(self.store.directory.glob("%s-*-ONE_WAY-%s.json" % (origin, day[:7]))):
+            destination = path.name.split("-")[1]
+            status, _ = self.on(origin, destination, day)
+            if status == "OPERATED":
+                flying.append(destination)
+        return flying
+
+    def note_for(self, origin, destination, day):
+        """One sentence for the screen, or "" when there is nothing worth saying."""
+        status, updated = self.on(origin, destination, day)
+        stamp = " (%s 기록 기준)" % updated[:10] if isinstance(updated, str) and len(updated) >= 10 else ""
+        if status is None:
+            return "%s→%s %s 운항 기록이 없어서 이 날 뜨는지 확인하지 못했어요. 운항하지 않는다는 뜻은 아니에요." % (
+                origin, destination, day)
+        if status == "OPERATED":
+            return ""
+        nearby = [value for value in self.nearby_flying(origin, destination, day) if value != day][:3]
+        instead = ""
+        if nearby:
+            instead = " 가까운 운항일은 %s 예요." % ", ".join(nearby)
+        else:
+            others = self.routes_flying_on(day, origin)[:6]
+            if others:
+                instead = " 그날 %s에서 뜨는 곳은 %s 예요." % (origin, ", ".join(others))
+        return "%s→%s 는 %s 에 운항하지 않아요%s.%s" % (origin, destination, day, stamp, instead)
+
+
 class ReleaseWatchService:
     """Waits for the 09:00 KST release of one date and gets to the booking screen.
 
@@ -1765,6 +1850,9 @@ class ReleaseWatchService:
 
     def __init__(self, award_service, root=ROOT):
         self.award = award_service
+        # What the collected calendars know about which days a route flies. Advisory
+        # only: a stale record must never stop a standby being registered.
+        self.schedule = RouteSchedule(CalendarStore(root))
         self.root = Path(root)
         self.lock = threading.RLock()
         self.jobs = {}       # id -> job dict
@@ -1862,8 +1950,14 @@ class ReleaseWatchService:
                 raise AppError("ACCOUNT_BUSY",
                                "'%s' 계정은 이미 %s %s→%s 를 기다리고 있어요. 다른 계정을 쓰거나 먼저 멈춰 주세요."
                                % (params["account"], clash["date"], clash["origin"], clash["destination"]), 409)
+            try:
+                schedule_note = self.schedule.note_for(params["origin"], params["destination"], params["date"])
+            except Exception:
+                # Knowing nothing about the schedule is never a reason to refuse a standby.
+                schedule_note = ""
             self.stops[watch_id] = threading.Event()
             self.jobs[watch_id] = dict(params, id=watch_id, status="waiting", attempts=0,
+                                       scheduleNote=schedule_note,
                                        message="%s 오전 9시에 %s 자리가 열리면 바로 잡을게요." % (params["opensOn"], params["date"]),
                                        startedAt=utc_now().isoformat())
             thread = threading.Thread(target=self._run, args=(watch_id, dict(params)), daemon=True)
@@ -2182,6 +2276,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond(dict(read_watches(), sync=watches_sync_state()))
             elif target.path == "/api/watches/cloud":
                 self.respond(cloud_runs())
+            elif target.path == "/api/route-schedule":
+                query = parse_qs(target.query)
+                origin = (query.get("origin", ["ICN"])[0] or "ICN").upper()
+                destination = (query.get("destination", [""])[0] or "").upper()
+                day = query.get("date", [""])[0]
+                if not re.fullmatch(r"[A-Z]{3}", origin) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day or ""):
+                    raise AppError("INVALID_INPUT", "공항 코드와 날짜를 확인해 주세요.")
+                schedule = self.server.release_watch_service.schedule
+                if re.fullmatch(r"[A-Z]{3}", destination):
+                    status, updated = schedule.on(origin, destination, day)
+                    self.respond({"origin": origin, "destination": destination, "date": day,
+                                  "operating": status, "sourceUpdatedAt": updated,
+                                  "note": schedule.note_for(origin, destination, day),
+                                  "nearby": schedule.nearby_flying(origin, destination, day)[:5]})
+                else:
+                    self.respond({"origin": origin, "date": day,
+                                  "flying": schedule.routes_flying_on(day, origin)})
             elif re.fullmatch(r"/api/business-scan/jobs/[a-f0-9]{32}", target.path):
                 self.respond(self.server.business_scan_service.get(target.path.rsplit("/", 1)[-1]))
             elif target.path in ("/business-scan-ui.js", "/watches-ui.js"):

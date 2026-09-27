@@ -1723,6 +1723,117 @@ class PartyStandbyTests(unittest.TestCase):
         self.assertLessEqual(self.watch.tabs_per_watch() * 2, self.watch.TAB_BUDGET)
 
 
+class RouteScheduleTests(unittest.TestCase):
+    """Korean Air's calendar marks each date OPERATED or NOT_OPERATED, so "no flight
+    that day" and "no seat that day" are different answers — and a route never
+    collected is a third one that must not read as "it flies"."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.store = app.CalendarStore(self.root)
+        self.schedule = app.RouteSchedule(self.store)
+
+    def record(self, origin, destination, month, not_operated=()):
+        leg = {"origin": origin, "destination": destination, "month": month,
+               "tripType": "ONE_WAY", "direction": "outbound"}
+        value = synthetic_calendar(leg)
+        for row in value["dates"]:
+            row["operatingStatus"] = "NOT_OPERATED" if row["date"] in not_operated else "OPERATED"
+        value["sourceUpdatedAt"] = "2026-09-18T23:00:00+09:00"
+        self.store.save(value, leg)
+        return value
+
+    def test_a_day_with_no_flight_is_not_a_day_with_no_seat(self):
+        self.record("ICN", "IST", "2026-11", not_operated=["2026-11-03"])
+        self.assertEqual(self.schedule.on("ICN", "IST", "2026-11-03")[0], "NOT_OPERATED")
+        self.assertEqual(self.schedule.on("ICN", "IST", "2026-11-04")[0], "OPERATED")
+
+    def test_a_route_never_collected_is_unknown_rather_than_flying(self):
+        status, _ = self.schedule.on("ICN", "ZZZ", "2026-11-03")
+        self.assertIsNone(status)
+        note = self.schedule.note_for("ICN", "ZZZ", "2026-11-03")
+        self.assertIn("기록이 없어서", note)
+        self.assertIn("운항하지 않는다는 뜻은 아니", note)
+
+    def test_a_flying_day_says_nothing_rather_than_reassuring(self):
+        self.record("ICN", "IST", "2026-11")
+        self.assertEqual(self.schedule.note_for("ICN", "IST", "2026-11-04"), "")
+
+    def test_a_non_flying_day_names_the_nearest_days_it_does_fly(self):
+        self.record("ICN", "IST", "2026-11", not_operated=["2026-11-03", "2026-11-05"])
+        note = self.schedule.note_for("ICN", "IST", "2026-11-03")
+        self.assertIn("운항하지 않아요", note)
+        self.assertIn("2026-11-04", note)
+        # The record's own age travels with it: a year-old schedule can have changed.
+        self.assertIn("2026-09-18", note)
+
+    def test_when_the_route_never_flies_nearby_it_offers_what_does_fly_that_day(self):
+        self.record("ICN", "IST", "2026-11",
+                    not_operated=[d["date"] for d in synthetic_calendar(
+                        {"origin": "ICN", "destination": "IST", "month": "2026-11",
+                         "tripType": "ONE_WAY", "direction": "outbound"})["dates"]])
+        self.record("ICN", "BCN", "2026-11")
+        note = self.schedule.note_for("ICN", "IST", "2026-11-03")
+        self.assertIn("BCN", note)
+
+    def test_the_days_a_route_flies_can_be_listed_for_a_month(self):
+        self.record("ICN", "IST", "2026-11", not_operated=["2026-11-03"])
+        days = self.schedule.flying_days("ICN", "IST", "2026-11")
+        self.assertNotIn("2026-11-03", days)
+        self.assertIn("2026-11-04", days)
+        self.assertIsNone(self.schedule.flying_days("ICN", "ZZZ", "2026-11"))
+
+
+class StandbyScheduleNoticeTests(unittest.TestCase):
+    """The warning is advisory. A record is a snapshot, and refusing a standby over a
+    stale one costs a seat the user could have had."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.watch = app.ReleaseWatchService(mock.Mock(), self.root)
+        for name in ("save", "hold_awake", "_run"):
+            patch = mock.patch.object(self.watch, name)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def request(self, **overrides):
+        raw = {"origin": "ICN", "destination": "IST", "date": "2027-09-23",
+               "cabin": "business", "program": "korean-air", "adults": 1}
+        raw.update(overrides)
+        return raw
+
+    def test_a_standby_on_a_day_the_route_does_not_fly_is_still_registered(self):
+        leg = {"origin": "ICN", "destination": "IST", "month": "2027-09",
+               "tripType": "ONE_WAY", "direction": "outbound"}
+        value = synthetic_calendar(leg)
+        for row in value["dates"]:
+            row["operatingStatus"] = "NOT_OPERATED" if row["date"] == "2027-09-23" else "OPERATED"
+        value["sourceUpdatedAt"] = "2026-09-18T23:00:00+09:00"
+        self.watch.schedule.store.save(value, leg)
+        job = self.watch.start(self.request())
+        self.assertEqual(job["status"], "waiting")
+        self.assertIn("운항하지 않아요", job["scheduleNote"])
+
+    def test_a_standby_on_a_flying_day_carries_no_warning(self):
+        leg = {"origin": "ICN", "destination": "IST", "month": "2027-09",
+               "tripType": "ONE_WAY", "direction": "outbound"}
+        value = synthetic_calendar(leg)
+        for row in value["dates"]:
+            row["operatingStatus"] = "OPERATED"
+        self.watch.schedule.store.save(value, leg)
+        self.assertEqual(self.watch.start(self.request())["scheduleNote"], "")
+
+    def test_knowing_nothing_about_the_schedule_never_blocks_a_standby(self):
+        with mock.patch.object(self.watch.schedule, "note_for", side_effect=OSError("unreadable")):
+            job = self.watch.start(self.request())
+        self.assertEqual(job["status"], "waiting")
+        self.assertEqual(job["scheduleNote"], "")
+
+
 
 if __name__ == "__main__":
     unittest.main()
