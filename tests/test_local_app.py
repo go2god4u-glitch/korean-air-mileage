@@ -446,8 +446,38 @@ class TemporaryStoreTests(unittest.TestCase):
         self.assertEqual(self.store.read(self.leg), old)
         self.assertEqual(job["result"]["legs"][0]["calendar"], old)
 
+    def test_offer_login_opens_the_search_chrome_and_never_hides_the_airline_reason(self):
+        opener = mock.Mock()
+        note = app.offer_login(opener, "korean-air")
+        opener.assert_called_once_with("korean-air")
+        self.assertIn("대한항공", note)
+        self.assertIn("다시 조회", note)
+        # A window that will not open must not replace the airline's own reason.
+        broken = mock.Mock(side_effect=RuntimeError("chrome is gone"))
+        fallback = app.offer_login(broken, "asiana-club")
+        self.assertIn("직접 열어", fallback)
+        self.assertIn("아시아나", fallback)
+        # Programs with no login window of their own add nothing and open nothing.
+        untouched = mock.Mock()
+        self.assertEqual(app.offer_login(untouched, "sas-eurobonus"), "")
+        untouched.assert_not_called()
+
+    def test_login_required_stops_the_job_but_leaves_the_retry_open(self):
+        # The site asking the user to sign in is not the airline refusing us: latching
+        # it would block the very retry the summary tells the user to make.
+        if self.store.block_path.exists():
+            self.store.block_path.unlink()
+        collector = mock.Mock(side_effect=app.AppError("LOGIN_REQUIRED", "synthetic login"))
+        service = app.SearchService(self.store, collector)
+        first = await_job(service, service.start(PARAMS))
+        self.assertEqual(first["error"]["code"], "LOGIN_REQUIRED")
+        self.assertFalse(self.store.block_path.exists())
+        second = await_job(service, service.start(PARAMS))
+        self.assertEqual(second["error"]["code"], "LOGIN_REQUIRED")
+        self.assertEqual(collector.call_count, 2)
+
     def test_restrictions_persist_and_prevent_all_retries_including_after_restart(self):
-        for code in sorted(app.RESTRICTIONS):
+        for code in sorted(app.LATCHED_RESTRICTIONS):
             with self.subTest(code=code):
                 if self.store.block_path.exists():
                     self.store.block_path.unlink()
@@ -569,8 +599,22 @@ class TemporaryStoreTests(unittest.TestCase):
         self.assertEqual(await_job(service, job_id)["status"], "complete")
         handoff.assert_not_called()
 
+    def test_handoff_login_required_leaves_both_paths_open_for_a_retry(self):
+        handoff = mock.Mock(side_effect=app.AppError("LOGIN_REQUIRED", "private child output"))
+        collector = mock.Mock(return_value=synthetic_calendar(self.leg))
+        service = app.SearchService(self.store, collector, handoff)
+        first = await_job(service, service.start_handoff(handoff_selection()))
+        self.assertEqual(first["error"]["code"], "LOGIN_REQUIRED")
+        self.assertNotIn("private child output", json.dumps(first))
+        self.assertFalse(self.store.block_path.exists())
+        # Signing in and pressing the button again must reach the airline, not a latch.
+        second = await_job(service, service.start_handoff(handoff_selection()))
+        self.assertEqual(second["error"]["code"], "LOGIN_REQUIRED")
+        self.assertEqual(handoff.call_count, 2)
+        self.assertEqual(await_job(service, service.start(PARAMS))["status"], "complete")
+
     def test_handoff_restriction_blocks_both_automation_paths_after_restart(self):
-        for code in sorted(app.RESTRICTIONS):
+        for code in sorted(app.LATCHED_RESTRICTIONS):
             with self.subTest(code=code):
                 if self.store.block_path.exists():
                     self.store.block_path.unlink()

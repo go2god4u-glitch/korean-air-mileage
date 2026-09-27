@@ -149,6 +149,12 @@ CABINS = ("economy", "premium", "prestige")
 # "all" is a display choice, not an additional field in the saved calendar.
 CABIN_CHOICES = ("all",) + CABINS
 RESTRICTIONS = {"ACCESS_RESTRICTED", "USER_ACTION_REQUIRED", "LOGIN_REQUIRED"}
+# A block or a security check is the airline refusing us, and the app never works
+# around one (README "접근 제한을 우회하거나 자동으로 재시도하지 않습니다"), so both latch
+# until the user intervenes. LOGIN_REQUIRED is not a refusal — the site is asking the
+# user to sign in — and latching it would block the very retry that fixes it.
+LATCHED_RESTRICTIONS = {"ACCESS_RESTRICTED", "USER_ACTION_REQUIRED"}
+LOGIN_PROGRAMS = ("korean-air", "asiana-club")
 HANDOFF_TIMEOUT_SECONDS = 150
 HANDOFF_STATUS_LIMIT = 8192
 ROUTE_CATALOG_LIMIT = 2 * 1024 * 1024
@@ -759,6 +765,25 @@ def collect_leg(leg, root=ROOT):
         raise AppError("INVALID_RESULT", "조회 결과가 선택한 노선과 날짜에 맞는지 확인하지 못했어요. 이전에 저장한 결과는 그대로 남아 있어요.")
 
 
+def offer_login(opener, program):
+    """Open the airline's login page so a LOGIN_REQUIRED stop is actionable.
+
+    The opener must be the one that opens the 조회용 Chrome profile the collector
+    itself drives (data/account-*-profile): a login in the user's everyday Chrome
+    is a different profile and would not clear the error being reported.
+
+    Returns the note to append to the job message. Failing to open a window must
+    never replace the airline's own reason for stopping, so failures stay quiet."""
+    airline = "대한항공" if program == "korean-air" else "아시아나"
+    if program not in LOGIN_PROGRAMS:
+        return ""
+    try:
+        opener(program)
+    except Exception:
+        return " 조회용 Chrome에서 %s 로그인을 직접 열어 주세요." % airline
+    return " 조회용 Chrome에 %s 로그인 창을 열었어요. 로그인한 뒤 다시 조회를 눌러 주세요." % airline
+
+
 def handoff_error(code="HANDOFF_FAILED"):
     # Never surface child-process messages, URLs, account details, or raw stacks.
     messages = {
@@ -912,7 +937,7 @@ class SearchService:
         with self.lock:
             if self.active:
                 raise AppError("BUSY", "다른 조회나 자동 입력을 진행하고 있어요. 끝난 뒤 다시 눌러 주세요.", 409)
-            if self.restricted or self.store.block_path.exists():
+            if self.blocked():
                 raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 자동 입력을 할 수 없어요. 저장된 결과를 보거나 대한항공 홈페이지에서 확인해 주세요.", 409)
             job_id = uuid.uuid4().hex
             if len(self.jobs) >= 40:
@@ -923,6 +948,9 @@ class SearchService:
             return job_id
 
     def restrict(self, code):
+        if code not in LATCHED_RESTRICTIONS:
+            # Recoverable: the sweep still stops, but the next search may run.
+            return
         with self.lock:
             self.restricted = True
             try:
@@ -930,9 +958,19 @@ class SearchService:
             except OSError:
                 pass
 
+    def blocked(self):
+        """True while a latched refusal stands, from this process or an earlier one.
+
+        A latch that could not be written to disk still holds for this process, so a
+        missing file never clears the in-memory flag."""
+        with self.lock:
+            if self.store.block_path.exists():
+                self.restricted = True
+            return self.restricted
+
     def _run_handoff(self, job_id, selection):
         try:
-            if self.restricted or self.store.block_path.exists():
+            if self.blocked():
                 raise handoff_error("ACCESS_RESTRICTED")
             self.update(job_id, status="running", message="새 Chrome 창에 선택한 조건을 입력하고 있어요.")
             result = self.handoff(selection)
@@ -969,7 +1007,7 @@ class SearchService:
                 value = self.store.read(leg)
                 if value is not None and not self.store.stale(value):
                     continue
-                if self.restricted or self.store.block_path.exists():
+                if self.blocked():
                     raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 새로 조회할 수 없어요. 이전 결과를 보거나 대한항공 홈페이지에서 확인해 주세요.")
                 self.update(job_id, status="running", progress=round(index / len(legs) * 100),
                             message="%s → %s · %s 마일리지 좌석을 확인하고 있어요." % (leg["origin"], leg["destination"], leg["month"]))
@@ -981,7 +1019,10 @@ class SearchService:
         except AppError as error:
             if error.code in RESTRICTIONS:
                 self.restrict(error.code)
-            self.update(job_id, status="failed", message=error.message, error={"code": error.code, "message": error.message},
+            message = error.message
+            if error.code == "LOGIN_REQUIRED":
+                message += " 조회용 Chrome에서 '대한항공 로그인·예약 열기'로 로그인한 뒤 다시 조회해 주세요."
+            self.update(job_id, status="failed", message=message, error={"code": error.code, "message": error.message},
                         result=self.store.result(params, fetched))
         except Exception:
             self.update(job_id, status="failed", message="조회 중 문제가 생겼어요. 이전에 저장한 결과는 그대로 남아 있어요.",
@@ -1218,6 +1259,15 @@ class BusinessScanService:
                 # One airline refusing says nothing about the other, so only that
                 # airline's later checks are retired.
                 if hit["liveCode"] in ("LOGIN_REQUIRED", "ACCESS_RESTRICTED"):
+                    if hit["liveCode"] == "LOGIN_REQUIRED" and hit["program"] not in refused:
+                        # Open it on the first refusal, while the sweep still runs, so
+                        # the login is ready instead of waiting for the summary. Opening
+                        # a window takes up to a minute, so say so before starting.
+                        airline = "대한항공" if hit["program"] == "korean-air" else "아시아나"
+                        self.update(job_id, message="%s 로그인이 필요해요. 조회용 Chrome에 로그인 창을 열고 있어요." % airline)
+                        note = offer_login(self.award.open, hit["program"])
+                        if note:
+                            self.update(job_id, message=note.strip())
                     refused.add(hit["program"])
             hit["liveCheckedAt"] = utc_now().isoformat()
             self.update(job_id, hits=list(hits))
@@ -1249,7 +1299,7 @@ class BusinessScanService:
                         self.update(job_id, completed=completed, skipped=list(skipped))
                         continue
                     with self.search.lock:
-                        if self.search.restricted or self.search.store.block_path.exists():
+                        if self.search.blocked():
                             raise AppError("ACCESS_RESTRICTED", "접속이 제한되어 지금은 새로 조회할 수 없어요.")
                     self.update(job_id, status="running", progress=round(completed / total * 100) if total else 100,
                                 message="%s %s→%s · %s 확인하고 있어요." % (
@@ -1297,7 +1347,7 @@ class BusinessScanService:
             gone = len([h for h in hits if h.get("live") == "gone"])
             blocked = {h.get("liveCode") for h in hits if h.get("live") == "unchecked"}
             if "LOGIN_REQUIRED" in blocked:
-                live_note = (" 실시간 확인은 대한항공 로그인이 필요해요 — 아래 '대한항공 로그인·예약 열기'에서"
+                live_note = (" 실시간 확인은 대한항공 로그인이 필요해요 — 열어 둔 로그인 창에서"
                              " 로그인한 뒤 다시 조회하면 지금 예약 가능한 자리만 보여드려요.")
             elif "ACCESS_RESTRICTED" in blocked:
                 live_note = " 대한항공이 조회를 제한해 실시간 확인을 하지 못했어요."
@@ -1317,7 +1367,10 @@ class BusinessScanService:
         except AppError as error:
             if error.code in RESTRICTIONS:
                 self.search.restrict(error.code)
-            self.update(job_id, status="failed", message=error.message,
+            message = error.message
+            if error.code == "LOGIN_REQUIRED":
+                message += offer_login(self.award.open, "korean-air")
+            self.update(job_id, status="failed", message=message,
                         error={"code": error.code, "message": error.message}, hits=hits, failures=failures)
         except Exception:
             self.update(job_id, status="failed", message="스캔 중 문제가 생겼어요. 지금까지 찾은 결과는 남아 있어요.",

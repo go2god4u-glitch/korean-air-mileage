@@ -376,6 +376,21 @@ curl -s -X POST http://127.0.0.1:8765/api/awards/confirm-login \
 
 `login_required`이면 화면의 **"대한항공 로그인·예약 열기"**로 조회용 Chrome에서 로그인한다.
 
+스캔 중에 `LOGIN_REQUIRED`가 처음 나오면 앱이 **조회용 Chrome에 로그인 창을 직접 열어 준다.**
+로그인은 반드시 그 창(`data/account-*-profile`)에서 해야 한다 — 평소 쓰는 Chrome에 로그인해도
+조회는 별도 프로필에서 돌기 때문에 오류가 그대로 남는다.
+
+`LOGIN_REQUIRED`는 `data/local/access-restricted.json` 래치를 **남기지 않는다.** 로그인한 뒤
+다시 조회를 누르면 그대로 진행된다. 래치를 남기는 것은 `ACCESS_RESTRICTED`와
+`USER_ACTION_REQUIRED`뿐이고, 이 둘은 자동으로 풀리지 않는다(README: 접근 제한을 우회하거나
+자동으로 재시도하지 않는다). 사람이 판단해 파일을 지운다:
+
+```bash
+rm data/local/access-restricted.json   # 지운 뒤 앱을 다시 시작한다
+```
+
+앱이 실행 중이면 파일만 지워도 메모리 플래그가 남아 있어 계속 막힌다.
+
 코드 `AMBIGUOUS_CABIN`이면 발견 1건에 등급이 둘 담긴 것이다. 버그이며
 [ARCHITECTURE §9.3](AWARD_SCAN_ARCHITECTURE.md#93-등급은-반드시-하나씩)을 본다.
 
