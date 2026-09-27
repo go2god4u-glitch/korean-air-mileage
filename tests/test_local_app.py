@@ -1538,5 +1538,122 @@ class LiveScanTests(unittest.TestCase):
         self.assertEqual(raised.exception.code, "BUSY")
 
 
+class ReleaseFiringTests(unittest.TestCase):
+    """09:00 is the whole point of a standby and was the least covered part of it.
+
+    The seats for a newly opened day go within minutes, so the order matters: fill
+    the forms before the hour, hold until the hour, then ask repeatedly."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.award = mock.Mock()
+        self.watch = app.ReleaseWatchService(self.award, self.root)
+        self.watch.POLL_SECONDS = 0
+        for name in ("save", "hold_awake", "_notify", "_notify_text"):
+            patch = mock.patch.object(self.watch, name)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def run_watch(self, answers, opens_in=0.4, **overrides):
+        """Drive one standby whose 09:00 is moments away instead of tomorrow."""
+        opens_at = datetime.now(app.SEOUL) + timedelta(seconds=opens_in)
+        params = {"origin": "ICN", "destination": "CDG", "date": "2027-09-23",
+                  "cabin": "business", "program": "korean-air", "account": "default",
+                  "adults": 1, "label": "", "windowDays": 360,
+                  "opensOn": "2026-09-28", "opensAt": opens_at.isoformat()}
+        params.update(overrides)
+        watch_id = "rehearsal"
+        self.watch.stops[watch_id] = threading.Event()
+        self.watch.jobs[watch_id] = dict(params, id=watch_id, status="waiting", attempts=0)
+        self.award.worker.call.side_effect = answers
+        self.watch._run(watch_id, params)
+        return self.watch.jobs[watch_id]
+
+    def calls(self):
+        return [call.args[0] for call in self.award.worker.call.call_args_list]
+
+    def test_the_forms_are_filled_before_the_hour_and_fired_at_it(self):
+        job = self.run_watch([{"status": "armed"},
+                              {"status": "available", "flights": ["KE901"], "held": True}])
+        self.assertEqual(self.calls(), ["arm", "fire"])
+        self.assertEqual(job["status"], "found")
+        self.assertEqual(job["flights"], ["KE901"])
+        self.assertTrue(job["held"])
+
+    def test_nothing_is_fired_before_the_hour(self):
+        # Firing early only burns a prepared tab on seats that do not exist yet.
+        fired_at = []
+
+        def answer(action, *rest, **kwargs):
+            if action == "fire":
+                fired_at.append(datetime.now(app.SEOUL))
+                return {"status": "available", "flights": [], "held": False}
+            return {"status": "armed"}
+
+        self.award.worker.call.side_effect = answer
+        opens_at = datetime.now(app.SEOUL) + timedelta(seconds=0.6)
+        self.run_watch(answer, opens_in=0.6)
+        self.assertTrue(fired_at, "the standby never fired")
+        self.assertGreaterEqual(fired_at[0], opens_at - timedelta(milliseconds=150))
+
+    def test_a_tab_that_lost_its_arming_falls_back_to_a_plain_search(self):
+        job = self.run_watch([{"status": "armed"},
+                              {"code": "NOT_ARMED"},
+                              {"status": "available", "flights": [], "held": False}])
+        self.assertEqual(self.calls(), ["arm", "fire", "verify"])
+        self.assertEqual(job["status"], "found")
+        self.assertFalse(job["held"])
+
+    def test_failing_to_prepare_still_asks_at_the_hour(self):
+        # Losing the head start is not losing the seat: it still searches at 09:00.
+        self.award.worker.call.side_effect = [
+            app.SasError("BROWSER_ERROR"),
+            {"status": "available", "flights": ["KE901"], "held": False},
+        ]
+        opens_at = datetime.now(app.SEOUL) + timedelta(seconds=0.4)
+        watch_id = "rehearsal"
+        self.watch.stops[watch_id] = threading.Event()
+        params = {"origin": "ICN", "destination": "CDG", "date": "2027-09-23",
+                  "cabin": "business", "program": "korean-air", "account": "default",
+                  "adults": 1, "label": "", "windowDays": 360,
+                  "opensOn": "2026-09-28", "opensAt": opens_at.isoformat()}
+        self.watch.jobs[watch_id] = dict(params, id=watch_id, status="waiting", attempts=0)
+        self.watch._run(watch_id, params)
+        self.assertEqual(self.calls(), ["arm", "verify"])
+        self.assertEqual(self.watch.jobs[watch_id]["status"], "found")
+
+    def test_a_refusal_stops_and_names_the_login_to_check(self):
+        job = self.run_watch([{"status": "armed"}, {"code": "ACCESS_RESTRICTED"}])
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("로그인", job["message"])
+
+    def test_an_empty_answer_is_retried_and_the_tab_refilled_between_tries(self):
+        # Submitting consumes the prepared page, so each empty answer costs a refill
+        # before the next try — otherwise the retry pays for the whole form again.
+        job = self.run_watch([{"status": "armed"},
+                              {"status": "empty"}, {"status": "armed"},
+                              {"status": "empty"}, {"status": "armed"},
+                              {"status": "available", "flights": [], "held": False}])
+        self.assertEqual(self.calls(), ["arm", "fire", "arm", "fire", "arm", "fire"])
+        self.assertEqual(job["status"], "found")
+        self.assertEqual(job["attempts"], 3)
+
+    def test_a_cancelled_standby_never_fires(self):
+        watch_id = "rehearsal"
+        self.watch.stops[watch_id] = threading.Event()
+        self.watch.stops[watch_id].set()
+        opens_at = datetime.now(app.SEOUL) + timedelta(seconds=5)
+        params = {"origin": "ICN", "destination": "CDG", "date": "2027-09-23",
+                  "cabin": "business", "program": "korean-air", "account": "default",
+                  "adults": 1, "label": "", "windowDays": 360,
+                  "opensOn": "2026-09-28", "opensAt": opens_at.isoformat()}
+        self.watch.jobs[watch_id] = dict(params, id=watch_id, status="waiting", attempts=0)
+        self.watch._run(watch_id, params)
+        self.award.worker.call.assert_not_called()
+
+
+
 if __name__ == "__main__":
     unittest.main()
