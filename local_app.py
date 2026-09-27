@@ -1874,6 +1874,42 @@ class ReleaseWatchService:
         self.save()
         return job
 
+    def start_party(self, raw):
+        """Register one standby per traveller for the same seat, in one action.
+
+        Two people flying together need two accounts — Korean Air books one
+        traveller per account — and registering them separately is how the dates
+        end up not matching. Each standby then runs on its own account's Chrome and
+        fires independently, so one seat found for one traveller is kept rather than
+        thrown away because the other came up empty: the second can go on the
+        airline's own waitlist afterwards."""
+        if not isinstance(raw, dict):
+            raise AppError("INVALID_INPUT", "예매 대기 조건을 확인해 주세요.")
+        accounts = raw.get("accounts")
+        if not isinstance(accounts, list) or not 1 <= len(accounts) <= 4:
+            raise AppError("INVALID_INPUT", "같이 갈 사람의 계정을 1~4개 골라 주세요.")
+        names, seen = [], set()
+        for value in accounts:
+            name = str(value).strip() or "default"
+            if not re.fullmatch(r"[A-Za-z0-9-]{1,24}", name):
+                raise AppError("INVALID_INPUT", "계정 이름은 영문·숫자·하이픈 24자 이내로 지어 주세요.")
+            if name in seen:
+                raise AppError("INVALID_INPUT", "같은 계정을 두 번 걸 수는 없어요.")
+            seen.add(name)
+            names.append(name)
+        # Validate the shared route once, so a bad date fails before any standby is
+        # registered rather than leaving one traveller waiting alone.
+        validate_release_request(dict(raw, account=names[0]))
+        started, failed = [], []
+        for name in names:
+            try:
+                started.append(self.start(dict(raw, account=name)))
+            except AppError as error:
+                failed.append({"account": name, "code": error.code, "message": error.message})
+        if not started:
+            raise AppError(failed[0]["code"], failed[0]["message"], 409)
+        return {"jobs": started, "failed": failed}
+
     def cancel(self, watch_id=None):
         with self.lock:
             targets = [watch_id] if watch_id else list(self.jobs)
@@ -2217,6 +2253,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond({"jobId": self.server.business_scan_service.start(payload)}, 202)
                 return
             if self.path == "/api/release-watch/start":
+                if isinstance(payload, dict) and payload.get("accounts"):
+                    self.respond(self.server.release_watch_service.start_party(payload), 202)
+                    return
                 self.respond({"job": self.server.release_watch_service.start(payload)}, 202)
                 return
             if self.path == "/api/release-watch/cancel":

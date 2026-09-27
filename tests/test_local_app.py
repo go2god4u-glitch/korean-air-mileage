@@ -1654,6 +1654,75 @@ class ReleaseFiringTests(unittest.TestCase):
         self.award.worker.call.assert_not_called()
 
 
+class PartyStandbyTests(unittest.TestCase):
+    """Two people flying together need two accounts, and one seat found for one of
+    them is a seat kept — not a failure because the other came up empty."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.watch = app.ReleaseWatchService(mock.Mock(), Path(self.temporary.name))
+        for name in ("save", "hold_awake"):
+            patch = mock.patch.object(self.watch, name)
+            patch.start()
+            self.addCleanup(patch.stop)
+        # The standby thread itself is not what these cover.
+        run = mock.patch.object(self.watch, "_run")
+        run.start()
+        self.addCleanup(run.stop)
+
+    def request(self, **overrides):
+        raw = {"origin": "ICN", "destination": "CDG", "date": "2027-09-23",
+               "cabin": "business", "program": "korean-air", "adults": 1,
+               "accounts": ["main", "second"]}
+        raw.update(overrides)
+        return raw
+
+    def test_one_action_registers_a_standby_for_each_traveller(self):
+        result = self.watch.start_party(self.request())
+        self.assertEqual([job["account"] for job in result["jobs"]], ["main", "second"])
+        self.assertEqual(result["failed"], [])
+        # Same seat, so the dates cannot drift apart the way two registrations can.
+        self.assertEqual({job["date"] for job in result["jobs"]}, {"2027-09-23"})
+        self.assertEqual({job["destination"] for job in result["jobs"]}, {"CDG"})
+
+    def test_each_traveller_waits_on_their_own_account(self):
+        result = self.watch.start_party(self.request())
+        self.assertEqual(len({job["id"] for job in result["jobs"]}), 2)
+        for job in result["jobs"]:
+            self.assertEqual(job["adults"], 1)
+
+    def test_a_bad_date_stops_before_anyone_is_left_waiting_alone(self):
+        with self.assertRaises(app.AppError):
+            self.watch.start_party(self.request(date="1999-01-01"))
+        self.assertEqual(self.watch.jobs, {})
+
+    def test_the_same_account_cannot_be_entered_twice(self):
+        with self.assertRaises(app.AppError):
+            self.watch.start_party(self.request(accounts=["main", "main"]))
+
+    def test_one_traveller_failing_to_register_does_not_cancel_the_other(self):
+        # The account that could be registered keeps its standby: a seat for one is
+        # still a seat, and the other can take the airline's waitlist.
+        real_start = self.watch.start
+
+        def start(raw):
+            if raw["account"] == "second":
+                raise app.AppError("ACCOUNT_BUSY", "이미 기다리는 중이에요.")
+            return real_start(raw)
+
+        with mock.patch.object(self.watch, "start", side_effect=start):
+            result = self.watch.start_party(self.request())
+        self.assertEqual([job["account"] for job in result["jobs"]], ["main"])
+        self.assertEqual([f["account"] for f in result["failed"]], ["second"])
+
+    def test_the_tab_budget_is_shared_rather_than_tripled_per_traveller(self):
+        self.watch.start_party(self.request())
+        # Nine tabs firing at once strains the mac and looks like a burst to the
+        # airline, so two standbys split the budget instead of taking three each.
+        self.assertLessEqual(self.watch.tabs_per_watch() * 2, self.watch.TAB_BUDGET)
+
+
 
 if __name__ == "__main__":
     unittest.main()

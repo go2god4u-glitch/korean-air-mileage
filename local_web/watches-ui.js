@@ -281,7 +281,7 @@
     if (asiana && $('release-cabin').value === 'first') $('release-cabin').value = 'business';
   }
 
-  const accountNames = { default: '기본', main: '계정 1', second: '계정 2' };
+  const accountNames = { default: '기본', main: '계정 1', second: '계정 2', both: '계정 1 + 계정 2' };
   let releaseAwake = { supported: false, holding: false };
 
   function releaseKind(status) {
@@ -347,7 +347,8 @@
   /** Each account signs in once, in its own Chrome profile. */
   async function openReleaseLogin() {
     const program = $('release-program').value;
-    const account = $('release-account').value;
+    // 'both' is a registration choice, not a profile: a login window is one person's.
+    const account = $('release-account').value === 'both' ? 'main' : $('release-account').value;
     try {
       await api('/api/open-booking', {
         method: 'POST',
@@ -355,7 +356,11 @@
           origin: 'ICN', destination: 'NRT', date: $('release-date').value || '2027-01-01' }),
       });
       $('release-status').dataset.kind = 'info';
-      $('release-status-text').textContent = `${programNames[program]} 로그인 창을 열었어요 (${accountNames[account] || account}). 로그인한 뒤 대기를 추가해 주세요.`;
+      // Opening one window while 'both' is chosen is the easy way to reach 09:00 with
+      // the second traveller still signed out, so it says which one was opened.
+      $('release-status-text').textContent = $('release-account').value === 'both'
+        ? `${programNames[program]} ${accountNames.main} 창을 열었어요. 이 창에서 로그인한 뒤, 계정을 '계정 2'로 바꿔 한 번 더 열어 그 사람도 로그인해 주세요. 두 사람 모두 로그인해야 9시에 둘 다 잡습니다.`
+        : `${programNames[program]} 로그인 창을 열었어요 (${accountNames[account] || account}). 로그인한 뒤 대기를 추가해 주세요.`;
     } catch (error) {
       $('release-status').dataset.kind = 'error';
       $('release-status-text').textContent = error.message;
@@ -374,7 +379,11 @@
           date: $('release-date').value,
           cabin: $('release-cabin').value,
           program: $('release-program').value,
-          account: $('release-account').value,
+          // Two people flying together are two accounts, registered in one action so
+          // their dates cannot drift apart. One seat found for one of them is kept.
+          ...($('release-account').value === 'both'
+            ? { accounts: ['main', 'second'] }
+            : { account: $('release-account').value }),
           adults: Number($('release-adults').value) || 1,
         }),
       });
