@@ -3,6 +3,7 @@ import {resolve} from 'node:path';
 import type {BrowserContext, Page} from 'playwright';
 import {openNativeChrome, NATIVE_USER_AGENT} from '../src/sas/native-chrome.js';
 import {sasRestriction} from '../src/sas/status.js';
+import {loginUrl as loginPageFor, LOGIN_PAGE} from '../src/sas/login-page.js';
 import {searchSky} from '../src/partners/skyteam.js';
 import {searchStar} from '../src/partners/star-alliance.js';
 import {searchPartnerMonth} from '../src/partners/month.js';
@@ -203,9 +204,10 @@ async function run(c:any){
       const id=accountId(c.query?.account);
       const ctx=await accountContext(id);
       const tab=await scratchTab(ctx,`${id}|keepalive`);
-      await tab.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});
-      await tab.waitForURL(/\/login|viewLogin/,{timeout:9000}).catch(()=>{});
-      const signedIn=!/\/login|viewLogin/.test(tab.url());
+      // Probe the page that answers the question, not the one that is public.
+      await tab.goto(loginPageFor(c.program,urls[c.program])!,{waitUntil:'domcontentloaded',timeout:45000});
+      await tab.waitForURL(u=>!LOGIN_PAGE.test(u.href),{timeout:9000}).catch(()=>{});
+      const signedIn=!LOGIN_PAGE.test(tab.url());
       return {status:'ok',account:id,authenticated:signedIn};
     }
     // Booking is a verification the user is about to act on, so it gets its own
@@ -238,13 +240,17 @@ async function run(c:any){
     const loginId=accountId(c.query?.account);
     const p=await ensure(c.program,c.action==='open'||c.action==='confirm-login',loginId);if(c.action==='confirm-login'){
       if((await state(c.program,loginId)).state==='restricted')return {state:'restricted',account:loginId};
-      await p.goto(urls[c.program],{waitUntil:'domcontentloaded',timeout:45000});
-      // The bounce to the login page can take several seconds. Answering before it
-      // lands calls an expired session signed in, which is the worse mistake: it
-      // is believed until 09:00, when there is no time left to sign in.
-      await p.waitForURL(/\/login|viewLogin/,{timeout:9000}).catch(()=>{});
+      await p.goto(loginPageFor(c.program,urls[c.program])!,{waitUntil:'domcontentloaded',timeout:45000});
+      // Settling takes several seconds either way. Answering before it lands calls
+      // an expired session signed in, which is the worse mistake: it is believed
+      // until 09:00, when there is no time left to sign in.
+      await p.waitForURL(u=>!LOGIN_PAGE.test(u.href),{timeout:9000}).catch(()=>{});
       return {...await state(c.program,loginId),account:loginId};
-    }if(c.action==='open'){await p.bringToFront();return {...await state(c.program,loginId),account:loginId};}if((await state(c.program,loginId)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
+    }if(c.action==='open'){
+      // Opening "the login window" has to land on the page where signing in is
+      // possible; the search page only looks like progress.
+      await p.goto(loginPageFor(c.program,urls[c.program])!,{waitUntil:'domcontentloaded',timeout:45000}).catch(()=>{});
+      await p.bringToFront();return {...await state(c.program,loginId),account:loginId};}if((await state(c.program,loginId)).state==='restricted')return {status:'failed',code:'ACCESS_RESTRICTED'};
     if(c.program==='asiana-club')return await searchAsiana(p,c.query,()=>generation!==initial);
     if(c.program==='skyteam')return await searchSky(p,c.query,()=>generation!==initial);
     if(c.program==='star-alliance')return await searchStar(p,c.query,()=>generation!==initial);

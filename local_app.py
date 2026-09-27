@@ -1385,7 +1385,7 @@ class BusinessScanService:
             available = len(hits)
             note = ""
             if refused:
-                note = " %s은(는) 중간에 더 확인하지 못했어요." % "·".join(
+                note = " %s 쪽은 중간에 더 확인하지 못했어요." % "·".join(
                     "대한항공" if p == "korean-air" else "아시아나" for p in sorted(refused))
             self.update(job_id, status="complete", progress=100, hits=hits, failures=failures,
                         skipped=skipped,
