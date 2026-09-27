@@ -65,6 +65,7 @@
             <div class="scan-block scan-row" style="padding-top:4px;border-top:1px solid #e4ecf3">
               <label class="field"><span class="field-label">실시간 확인 시작일</span><input type="date" id="scan-live-start" class="scan-date"></label>
               <label class="field"><span class="field-label">실시간 확인 종료일</span><input type="date" id="scan-live-end" class="scan-date"></label>
+              <label class="field"><span class="field-label">누구 계정으로</span><select id="scan-live-account" class="scan-date"><option value="default">공용 (조회용)</option><option value="main">나 (계정 1)</option><option value="second">배우자 (계정 2)</option></select></label>
             </div>
             <p id="scan-live-estimate" class="scan-estimate"></p>
             <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center"><button class="primary" id="scan-button" type="submit" disabled>비즈니스석 검색</button><button class="primary" id="scan-live-button" type="button">실시간으로 정확히 확인</button><button class="provider-link" id="scan-cancel" type="button" style="margin-top:0;border:0;background:#77879b" hidden>조회 멈추기</button></div>

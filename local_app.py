@@ -411,6 +411,11 @@ def validate_live_scan_request(raw, today=None):
     adults = raw.get("adults") or 1
     if not isinstance(adults, int) or not 1 <= adults <= 9:
         raise AppError("INVALID_INPUT", "인원은 1명에서 9명 사이로 골라 주세요.")
+    # Whose signed-in Chrome to ask from. Asiana's public calendar needs no login but
+    # its booking search does, and each traveller signs in to their own profile.
+    account = str(raw.get("account", "default")).strip() or "default"
+    if not re.fullmatch(r"[A-Za-z0-9-]{1,24}", account):
+        raise AppError("INVALID_INPUT", "계정 이름은 영문·숫자·하이픈 24자 이내로 지어 주세요.")
 
     dates = [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
     total = len(origins) * len(destinations) * len(dates) * len(programs)
@@ -420,7 +425,7 @@ def validate_live_scan_request(raw, today=None):
                        % (LIVE_SCAN_MAX_QUERIES, total))
     return {"origins": origins, "destinations": destinations,
             "dates": [d.isoformat() for d in dates], "cabin": cabin,
-            "programs": list(dict.fromkeys(programs)), "adults": adults}
+            "programs": list(dict.fromkeys(programs)), "adults": adults, "account": account}
 
 
 def validate_business_scan_request(raw, today=None):
@@ -1311,11 +1316,12 @@ class BusinessScanService:
                                   "message": "실시간 조회를 준비하고 있어요.",
                                   "total": len(queries), "completed": 0, "hits": [], "failures": []}
             self.search.active = job_id
-            threading.Thread(target=self._run_live, args=(job_id, queries, params["cabin"]),
+            threading.Thread(target=self._run_live,
+                             args=(job_id, queries, params["cabin"], params["account"]),
                              daemon=True).start()
             return job_id
 
-    def _run_live(self, job_id, queries, cabin):
+    def _run_live(self, job_id, queries, cabin, account="default"):
         """Asks the airline about one date at a time and keeps only what it confirms.
 
         The public calendar is never consulted: it is a once-daily snapshot that has
@@ -1344,7 +1350,8 @@ class BusinessScanService:
                 # The airline names business class differently from our own calendar,
                 # and sending our word for it is answered with INVALID_QUERY.
                 ask = {"origin": query["origin"], "destination": query["destination"],
-                       "date": query["date"], "cabin": LIVE_SCAN_CABINS[cabin]}
+                       "date": query["date"], "cabin": LIVE_SCAN_CABINS[cabin],
+                       "account": account}
                 if program == "asiana-club" and self.party_size > 1:
                     ask["adults"] = self.party_size
                 try:
@@ -1375,8 +1382,8 @@ class BusinessScanService:
                     elif code == "LOGIN_REQUIRED":
                         # One airline wanting a login says nothing about the other.
                         refused.add(program)
-                        self.update(job_id, message="%s 로그인이 필요해요. 조회용 Chrome에 로그인 창을 열고 있어요." % airline)
-                        offer_login(self.award.open, program)
+                        self.update(job_id, message="%s '%s' 계정 로그인이 필요해요. 그 계정의 로그인 창을 열고 있어요." % (airline, account))
+                        offer_login(lambda p: self.award.open(p, account), program)
                     elif code in RESTRICTIONS:
                         refused.add(program)
                 completed += 1

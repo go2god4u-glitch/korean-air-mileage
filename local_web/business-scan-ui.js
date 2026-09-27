@@ -510,6 +510,9 @@
       programs: picked.programs, adults: picked.adults,
       startDate: $('scan-live-start').value, endDate: $('scan-live-end').value,
       cabin: 'prestige',
+      // Asiana's booking search needs a login and each traveller signs in to their
+      // own Chrome, so the sweep has to say whose profile is asking.
+      account: $('scan-live-account').value || 'default',
     };
   }
 
@@ -615,7 +618,7 @@
     $('tab-release').addEventListener('click', () => showTab('release'));
     $('scan-form').addEventListener('submit', startScan);
     $('scan-live-button').addEventListener('click', () => void startLiveScan());
-    for (const id of ['scan-live-start', 'scan-live-end']) {
+    for (const id of ['scan-live-start', 'scan-live-end', 'scan-live-account']) {
       $(id).addEventListener('change', updateLiveEstimate);
     }
     $('scan-cancel').addEventListener('click', cancelScan);

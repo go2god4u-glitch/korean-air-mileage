@@ -1522,7 +1522,33 @@ class LiveScanTests(unittest.TestCase):
         self.assertEqual(job["completed"], 3)
         # The remaining dates are not reported as sold out, and the window is opened.
         self.assertEqual([f["code"] for f in job["failures"]], ["LOGIN_REQUIRED"])
-        self.award.open.assert_called_once_with("korean-air")
+        # The window opened has to be that account's, not the shared profile's.
+        self.award.open.assert_called_once_with("korean-air", "default")
+
+    def test_each_traveller_can_be_asked_from_their_own_signed_in_chrome(self):
+        # Asiana's booking search needs a login, and each traveller signs in to their
+        # own profile, so the sweep has to say whose Chrome is asking.
+        self.award.worker.call.side_effect = [{"status": "empty"}] * 3
+        job_id = self.scan.start_live({"destinations": ["FRA"], "startDate": "2027-03-10",
+                                       "endDate": "2027-03-12", "cabin": "prestige",
+                                       "programs": ["asiana-club"], "account": "main"})
+        for _ in range(200):
+            if self.scan.get(job_id)["status"] in ("complete", "failed", "cancelled"):
+                break
+            time.sleep(0.02)
+        for call in self.award.worker.call.call_args_list:
+            self.assertEqual(call.args[1]["account"], "main")
+
+    def test_a_refused_login_opens_that_accounts_window_not_the_shared_one(self):
+        self.award.worker.call.side_effect = [{"status": "failed", "code": "LOGIN_REQUIRED"}]
+        job_id = self.scan.start_live({"destinations": ["FRA"], "startDate": "2027-03-10",
+                                       "endDate": "2027-03-10", "cabin": "prestige",
+                                       "programs": ["asiana-club"], "account": "main"})
+        for _ in range(200):
+            if self.scan.get(job_id)["status"] in ("complete", "failed", "cancelled"):
+                break
+            time.sleep(0.02)
+        self.award.open.assert_called_once_with("asiana-club", "main")
 
     def test_the_public_calendar_is_never_read(self):
         with mock.patch.object(self.service.store, "read",
